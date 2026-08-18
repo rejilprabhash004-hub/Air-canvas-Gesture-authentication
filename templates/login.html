@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Login — CyberDash{% endblock %}
+{% block content %}
+<div class="card auth-card">
+    <h1>Sign In</h1>
+    <p class="muted">Password step. Gesture verification is added after Step 6.</p>
+    <form method="POST" action="{{ url_for('login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Username
+            <input type="text" name="username" required autofocus>
+        </label>
+        <label>Password
+            <input type="password" name="password" required>
+        </label>
+        <button type="submit">Sign In</button>
+    </form>
+    <p class="muted">No account? <a href="{{ url_for('register') }}">Register</a></p>
+</div>
+{% endblock %}

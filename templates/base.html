@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}CyberDash{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <span class="brand">🛡 Air-Gesture CyberDash</span>
+        {% if session.get('username') %}
+        <nav>
+            <a href="{{ url_for('dashboard') }}">Dashboard</a>
+            <a href="{{ url_for('events_page') }}">Events</a>
+            <a href="{{ url_for('forensic_logs_page') }}">Forensic Logs</a>
+            <button id="navToggle" type="button" class="nav-toggle-btn">Enable Gesture Nav</button>
+            <span class="user-chip">{{ session['username'] }}</span>
+            <a href="{{ url_for('logout') }}">Logout</a>
+        </nav>
+        {% endif %}
+    </header>
+
+    {% if session.get('username') %}
+    <div id="navPanel" class="nav-panel" style="display:none;">
+        <img id="navFeed" src="" alt="nav feed" class="nav-feed">
+        <div id="navGestureLabel" class="muted">-</div>
+    </div>
+    {% endif %}
+
+    <main class="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-stack">
+                {% for category, message in messages %}
+                    <div class="flash flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    {% if session.get('username') %}
+    <script>
+    const NAV_PAGES = {
+        dashboard: "{{ url_for('dashboard') }}",
+        events: "{{ url_for('events_page') }}",
+        forensic_logs: "{{ url_for('forensic_logs_page') }}"
+    };
+    const PAGE_ORDER = ['dashboard', 'events', 'forensic_logs'];
+    const CURRENT_PAGE = "{{ active_page or 'dashboard' }}";
+
+    const navToggle = document.getElementById('navToggle');
+    const navPanel = document.getElementById('navPanel');
+    const navFeed = document.getElementById('navFeed');
+    const navGestureLabel = document.getElementById('navGestureLabel');
+    let navEnabled = false;
+    let navPollTimer = null;
+
+    function gotoPage(delta) {
+        const idx = PAGE_ORDER.indexOf(CURRENT_PAGE);
+        const nextIdx = (idx + delta + PAGE_ORDER.length) % PAGE_ORDER.length;
+        window.location.href = NAV_PAGES[PAGE_ORDER[nextIdx]];
+    }
+
+    function handleNavAction(action) {
+        if (action === 'FIST') {
+            fetch("{{ url_for('lock_dashboard') }}", {
+                method: 'POST',
+                headers: { 'X-CSRFToken': "{{ csrf_token() }}" }
+            }).then(() => window.location.href = "{{ url_for('login') }}");
+            return;
+        }
+        if (action === 'TWO_FINGERS') { gotoPage(1); return; }
+        if (action === 'OPEN_PALM') { gotoPage(-1); return; }
+        if (action === 'INDEX') {
+            // Context-sensitive "select": click the page's primary action
+            // button if present (e.g. Generate Events), else no-op.
+            const primary = document.querySelector('.btn-inline[type="submit"], form[action*="generate"] button');
+            if (primary) primary.click();
+            return;
+        }
+        if (action === 'THUMB_UP') {
+            window.location.reload();
+        }
+    }
+
+    async function pollNav() {
+        if (!navEnabled) return;
+        try {
+            const res = await fetch("{{ url_for('nav_status') }}");
+            const data = await res.json();
+            navGestureLabel.textContent = `Gesture: ${data.current_gesture || '-'}`;
+            if (data.pending_action) handleNavAction(data.pending_action);
+        } catch (e) { /* transient — keep polling */ }
+        navPollTimer = setTimeout(pollNav, 250);
+    }
+
+    navToggle.addEventListener('click', async () => {
+        navEnabled = !navEnabled;
+        const csrfHeaders = { 'X-CSRFToken': "{{ csrf_token() }}" };
+        if (navEnabled) {
+            await fetch("{{ url_for('nav_start') }}", { method: 'POST', headers: csrfHeaders });
+            navFeed.src = "{{ url_for('nav_video_feed') }}";
+            navPanel.style.display = 'block';
+            navToggle.textContent = 'Disable Gesture Nav';
+            pollNav();
+        } else {
+            await fetch("{{ url_for('nav_stop') }}", { method: 'POST', headers: csrfHeaders });
+            navFeed.src = '';
+            navPanel.style.display = 'none';
+            navToggle.textContent = 'Enable Gesture Nav';
+            clearTimeout(navPollTimer);
+        }
+    });
+    </script>
+    {% endif %}
+</body>
+</html>

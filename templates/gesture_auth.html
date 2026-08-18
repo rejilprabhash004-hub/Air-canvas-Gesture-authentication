@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Gesture Verification — CyberDash{% endblock %}
+{% block content %}
+<div class="card auth-card gesture-card">
+    <h1>Gesture Verification</h1>
+    <p class="muted">Hi {{ username }} — perform your {{ expected_length }}-gesture sequence in front of the webcam.</p>
+
+    <img src="{{ url_for('video_feed') }}" alt="Webcam feed" class="video-feed">
+
+    <div id="progress" class="gesture-progress">Waiting for camera...</div>
+    <div id="statusMsg" class="muted"></div>
+
+    <button id="restartBtn" type="button" style="display:none;">Try Again</button>
+    <p class="muted"><a href="{{ url_for('login') }}">Cancel and return to login</a></p>
+</div>
+
+<script>
+const progressEl = document.getElementById('progress');
+const statusEl = document.getElementById('statusMsg');
+const restartBtn = document.getElementById('restartBtn');
+let polling = true;
+
+async function poll() {
+    if (!polling) return;
+    try {
+        const res = await fetch("{{ url_for('gesture_status') }}");
+        const data = await res.json();
+
+        progressEl.textContent =
+            `Current: ${data.current_gesture || '-'}  |  ` +
+            `Captured ${data.captured_sequence.length}/${data.expected_length}: ` +
+            `[${data.captured_sequence.join(', ')}]`;
+
+        if (data.status === 'GRANTED') {
+            polling = false;
+            statusEl.textContent = 'Access granted. Redirecting...';
+            setTimeout(() => window.location.href = "{{ url_for('dashboard') }}", 800);
+        } else if (data.status === 'DENIED') {
+            polling = false;
+            if (data.locked) {
+                statusEl.textContent = 'Multiple authentication failures detected. Account temporarily locked.';
+                restartBtn.style.display = 'none';
+            } else {
+                statusEl.textContent = 'Access denied — sequence did not match.';
+                restartBtn.style.display = 'block';
+            }
+        } else if (data.status === 'TIMEOUT') {
+            polling = false;
+            statusEl.textContent = 'Timed out waiting for gestures.';
+            restartBtn.style.display = 'block';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Connection error — retrying...';
+    }
+    if (polling) setTimeout(poll, 300);
+}
+
+restartBtn.addEventListener('click', async () => {
+    restartBtn.style.display = 'none';
+    statusEl.textContent = '';
+    await fetch("{{ url_for('gesture_auth_restart') }}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': "{{ csrf_token() }}" }
+    });
+    polling = true;
+    poll();
+});
+
+poll();
+</script>
+{% endblock %}

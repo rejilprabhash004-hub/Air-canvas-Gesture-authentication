@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Security Events — CyberDash{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Security Events</h1>
+    <form method="POST" action="{{ url_for('events_generate') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn-inline">Generate 15 Simulated Events</button>
+    </form>
+</div>
+<p class="muted">Simulated events use only private/example IP ranges and represent no real network activity.</p>
+
+<form method="GET" action="{{ url_for('events_page') }}" class="filter-bar">
+    <label>Event Type
+        <select name="event_type" onchange="this.form.submit()">
+            <option value="">All</option>
+            {% for t in event_types %}
+            <option value="{{ t }}" {% if t == selected_type %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Severity
+        <select name="severity" onchange="this.form.submit()">
+            <option value="">All</option>
+            {% for s in severities %}
+            <option value="{{ s }}" {% if s == selected_severity %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    {% if selected_type or selected_severity %}
+    <a href="{{ url_for('events_page') }}" class="muted">Clear filters</a>
+    {% endif %}
+</form>
+
+<div class="card">
+    {% if events %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Event ID</th><th>Type</th><th>Severity</th><th>Source IP</th><th>Description</th><th>Status</th><th>Time</th></tr>
+        </thead>
+        <tbody>
+        {% for e in events %}
+            <tr>
+                <td>{{ e.event_id }}</td>
+                <td>{{ e.event_type }}</td>
+                <td><span class="badge badge-{{ e.severity|lower }}">{{ e.severity }}</span></td>
+                <td>{{ e.source_ip }}</td>
+                <td>{{ e.description }}</td>
+                <td>{{ e.status }}</td>
+                <td>{{ e.timestamp }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No events match the current filters.</p>
+    {% endif %}
+</div>
+{% endblock %}

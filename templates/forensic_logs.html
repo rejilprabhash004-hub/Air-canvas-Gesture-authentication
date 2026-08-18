@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Forensic Logs — CyberDash{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Forensic / Audit Logs</h1>
+    <a href="{{ url_for('forensic_logs_export', **clean_filters) }}" class="btn-inline btn-link">Export CSV</a>
+</div>
+<p class="muted">Append-only. Logs cannot be edited or deleted through this interface.</p>
+
+<form method="GET" action="{{ url_for('forensic_logs_page') }}" class="filter-bar filter-bar-wrap">
+    <label>Search
+        <input type="text" name="search" value="{{ filters.search or '' }}" placeholder="details or action...">
+    </label>
+    <label>Action
+        <select name="action">
+            <option value="">All</option>
+            {% for a in actions %}
+            <option value="{{ a }}" {% if a == filters.action %}selected{% endif %}>{{ a }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Severity
+        <select name="severity">
+            <option value="">All</option>
+            {% for s in severities %}
+            <option value="{{ s }}" {% if s == filters.severity %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Username
+        <select name="username">
+            <option value="">All</option>
+            {% for u in usernames %}
+            <option value="{{ u }}" {% if u == filters.username %}selected{% endif %}>{{ u }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>From
+        <input type="date" name="date_from" value="{{ filters.date_from or '' }}">
+    </label>
+    <label>To
+        <input type="date" name="date_to" value="{{ filters.date_to or '' }}">
+    </label>
+    <button type="submit" class="btn-inline">Apply</button>
+    {% if filters.action or filters.severity or filters.username or filters.date_from or filters.date_to or filters.search %}
+    <a href="{{ url_for('forensic_logs_page') }}" class="muted">Clear</a>
+    {% endif %}
+</form>
+
+<div class="card">
+    {% if logs %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Time</th><th>User</th><th>Action</th><th>Event Ref</th><th>Severity</th><th>Result</th><th>IP</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+        {% for l in logs %}
+            <tr>
+                <td>{{ l.timestamp }}</td>
+                <td>{{ l.username or '—' }}</td>
+                <td>{{ l.action }}</td>
+                <td>{{ l.event_ref or '—' }}</td>
+                <td>{% if l.severity %}<span class="badge badge-{{ l.severity|lower }}">{{ l.severity }}</span>{% else %}—{% endif %}</td>
+                <td>{{ l.result or '—' }}</td>
+                <td>{{ l.ip_address or '—' }}</td>
+                <td>{{ l.details }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No forensic log entries match the current filters.</p>
+    {% endif %}
+</div>
+{% endblock %}

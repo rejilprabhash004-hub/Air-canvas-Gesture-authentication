@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — CyberDash{% endblock %}
+{% block content %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+
+<h1 class="dash-title">Security Dashboard</h1>
+<p class="muted">Welcome, {{ username }}.</p>
+
+<div class="tile-grid">
+    <div class="tile"><span class="tile-value">{{ summary.total_events }}</span><span class="tile-label">Total Events</span></div>
+    <div class="tile tile-critical"><span class="tile-value">{{ summary.critical_events }}</span><span class="tile-label">Critical</span></div>
+    <div class="tile tile-high"><span class="tile-value">{{ summary.high_events }}</span><span class="tile-label">High</span></div>
+    <div class="tile tile-medium"><span class="tile-value">{{ summary.medium_events }}</span><span class="tile-label">Medium</span></div>
+    <div class="tile tile-low"><span class="tile-value">{{ summary.low_events }}</span><span class="tile-label">Low</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.failed_logins }}</span><span class="tile-label">Failed Logins</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.successful_logins }}</span><span class="tile-label">Successful Logins</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.suspicious_ips }}</span><span class="tile-label">Suspicious IPs</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.port_scan_events }}</span><span class="tile-label">Port-Scan Events</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.malware_alerts }}</span><span class="tile-label">Malware Alerts</span></div>
+    <div class="tile"><span class="tile-value">{{ summary.firewall_blocks }}</span><span class="tile-label">Firewall Blocks</span></div>
+</div>
+
+<div class="chart-grid">
+    <div class="card chart-card">
+        <h2>Event Severity</h2>
+        <canvas id="severityChart"></canvas>
+    </div>
+    <div class="card chart-card">
+        <h2>Auth Statistics</h2>
+        <canvas id="authChart"></canvas>
+    </div>
+    <div class="card chart-card chart-card-wide">
+        <h2>Security Event Timeline (7 days)</h2>
+        <canvas id="timelineChart"></canvas>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Top Suspicious IP Addresses</h2>
+    {% if top_ips %}
+    <table class="data-table">
+        <thead><tr><th>Source IP</th><th>Event Count</th></tr></thead>
+        <tbody>
+        {% for ip in top_ips %}
+            <tr><td>{{ ip.source_ip }}</td><td>{{ ip.count }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No security events recorded yet.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Recent Security Alerts</h2>
+    {% if recent_alerts %}
+    <table class="data-table">
+        <thead><tr><th>Event ID</th><th>Type</th><th>Severity</th><th>Source IP</th><th>Status</th><th>Time</th></tr></thead>
+        <tbody>
+        {% for e in recent_alerts %}
+            <tr>
+                <td>{{ e.event_id }}</td>
+                <td>{{ e.event_type }}</td>
+                <td><span class="badge badge-{{ e.severity|lower }}">{{ e.severity }}</span></td>
+                <td>{{ e.source_ip }}</td>
+                <td>{{ e.status }}</td>
+                <td>{{ e.timestamp }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No security events recorded yet. The simulated event generator is added in Step 9.</p>
+    {% endif %}
+</div>
+
+<script>
+const severityData = {{ severity_breakdown_json | safe }};
+const timelineData = {{ timeline_json | safe }};
+const topIpsData = {{ top_ips_json | safe }};
+const authStatsData = {{ auth_stats_json | safe }};
+
+const severityColors = { LOW: '#34d399', MEDIUM: '#fbbf24', HIGH: '#fb923c', CRITICAL: '#f87171' };
+
+new Chart(document.getElementById('severityChart'), {
+    type: 'doughnut',
+    data: {
+        labels: severityData.map(d => d.severity),
+        datasets: [{
+            data: severityData.map(d => d.count),
+            backgroundColor: severityData.map(d => severityColors[d.severity] || '#8ea0bd'),
+            borderWidth: 0
+        }]
+    },
+    options: { plugins: { legend: { labels: { color: '#e6edf7' } } } }
+});
+
+new Chart(document.getElementById('authChart'), {
+    type: 'bar',
+    data: {
+        labels: ['Granted', 'Denied'],
+        datasets: [{
+            data: [authStatsData.granted, authStatsData.denied],
+            backgroundColor: ['#34d399', '#f87171']
+        }]
+    },
+    options: {
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { ticks: { color: '#8ea0bd' }, grid: { color: '#223049' } },
+            y: { ticks: { color: '#8ea0bd' }, grid: { color: '#223049' }, beginAtZero: true }
+        }
+    }
+});
+
+new Chart(document.getElementById('timelineChart'), {
+    type: 'line',
+    data: {
+        labels: timelineData.map(d => d.date.slice(5)),
+        datasets: [{
+            label: 'Security Events',
+            data: timelineData.map(d => d.count),
+            borderColor: '#22d3ee',
+            backgroundColor: 'rgba(34, 211, 238, 0.15)',
+            fill: true,
+            tension: 0.3
+        }]
+    },
+    options: {
+        plugins: { legend: { labels: { color: '#e6edf7' } } },
+        scales: {
+            x: { ticks: { color: '#8ea0bd' }, grid: { color: '#223049' } },
+            y: { ticks: { color: '#8ea0bd' }, grid: { color: '#223049' }, beginAtZero: true }
+        }
+    }
+});
+</script>
+{% endblock %}

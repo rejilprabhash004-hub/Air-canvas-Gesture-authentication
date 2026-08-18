@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Register — CyberDash{% endblock %}
+{% block content %}
+<div class="card auth-card">
+    <h1>Create Account</h1>
+    <form method="POST" action="{{ url_for('register') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Username
+            <input type="text" name="username" pattern="[A-Za-z0-9_]{3,32}" required>
+        </label>
+        <label>Password
+            <input type="password" name="password" minlength="8" required>
+        </label>
+
+        <fieldset>
+            <legend>Gesture Sequence (choose 4, in order)</legend>
+            {% for i in range(1, 5) %}
+            <label>Step {{ i }}
+                <select name="gesture_sequence" required>
+                    <option value="" disabled selected>Select gesture</option>
+                    {% for g in valid_gestures %}
+                    <option value="{{ g }}">{{ g.replace('_', ' ') }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            {% endfor %}
+        </fieldset>
+
+        <button type="submit">Register</button>
+    </form>
+    <p class="muted">Already have an account? <a href="{{ url_for('login') }}">Sign in</a></p>
+</div>
+{% endblock %}
