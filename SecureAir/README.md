@@ -1,34 +1,38 @@
 # SecureAir
 
-**Stage 1: isolated project scaffold.** SecureAir is being developed alongside the original Flask project so existing behavior remains untouched.
+**Stage 2: local hand detection and landmark extraction.** This is still a research prototype, not a complete authentication system.
 
-## Goal and stage status
+## What Stage 2 adds
 
-SecureAir is a local AI-assisted air-gesture authentication and security-monitoring research prototype. This stage lays out the package and documentation; it does not yet provide camera processing or authentication.
+- MediaPipe Hands processing through `gesture/hand_detector.py`.
+- Exactly 21 finite XYZ landmarks validated by `gesture/landmarks.py`.
+- Wrist-relative, palm-scale normalization in `gesture/landmarks.py`.
+- A camera preview utility that displays transient frames but does not save them.
+- Synthetic unit tests that require no webcam.
 
-## Windows scaffold setup
+Normalization subtracts the wrist position from all landmarks, removing image translation, then divides coordinates by the wrist-to-middle-finger MCP distance, reducing apparent hand-size variation. It also scales Z by that same 2D palm measure. This does not correct perspective, rotation, camera calibration, lighting, or all depth errors.
 
-1. Install Python 3.11 or newer.
-2. Open PowerShell in `SecureAir` and run:
+Two hands are detected so that the current one-hand mode can reject ambiguous captures rather than silently choosing a hand. Two-hand authentication is not implemented.
 
-   ```powershell
-   py -3.11 -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   python -m pip install --upgrade pip
-   pip install -r requirements-dev.txt
-   python -m pytest
-   ```
+## Windows setup
 
-Camera library versions will need verification on the target Windows/Python version before the camera stages.
+From the `SecureAir` directory, in PowerShell:
 
-## Privacy and security principles
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements-dev.txt
+$env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"
+python -m pytest
+ruff check .
+python -m gesture.camera_preview
+```
 
-- Process camera frames locally; do not upload or retain raw footage.
-- Store only necessary extracted features and offer profile deletion.
-- Never collect website passwords or private page content.
-- Monitor only explicitly configured domains.
-- The planned service binds to loopback; it must not be exposed publicly.
-- Hashing detects tampering; it is not encryption or proof against full host compromise.
-- Educational prototype only; not a substitute for standard website authentication.
+Allow camera access when Windows asks. Quit the preview with **Q** or **Esc**. If the camera is unavailable, close apps using it and try `python -m gesture.camera_preview --camera 1`.
 
-See `docs/architecture.md`, `docs/development-plan.md`, and `docs/threat-model.md`. The legacy test suite deletes its database; run it only in a disposable clone.
+The secret is only a local environment setting; never commit it. Camera frames are processed in memory and discarded. Do not use the preview around people without their consent.
+
+## Stage status
+
+Stage 2 implements landmark capture and normalization only. It does **not** recognize gestures, enroll users, train a model, or authenticate. Run tests before proceeding to gesture recognition.
