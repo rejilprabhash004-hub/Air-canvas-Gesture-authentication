@@ -1,0 +1,13 @@
+# Local runtime data, secrets, camera samples, trained profiles/models, reports
+.env
+*.sqlite3
+*.db
+*.db-*
+data/
+models/
+reports/generated/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
