@@ -1,0 +1,8 @@
+# Runtime dependencies planned for SecureAir's local service, vision and ML stages.
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+pydantic==2.10.6
+numpy==1.26.4
+opencv-python==4.10.0.84
+mediapipe==0.10.14
+scikit-learn==1.6.1
