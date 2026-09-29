@@ -22,15 +22,23 @@ def make_settings(*, host="127.0.0.1", challenge_seconds=60):
     )
 
 
+def make_client(settings=None):
+    """Use an explicit loopback peer so middleware exercises production checks."""
+    return TestClient(
+        create_app(settings or make_settings()),
+        client=("127.0.0.1", 50000),
+    )
+
+
 def test_health_is_local_and_does_not_require_bearer():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "scope": "loopback"}
 
 
 def test_challenge_requires_bearer_and_rejects_wrong_secret():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     payload = {"profile_id": "alice"}
     assert client.post("/challenges", json=payload).status_code == 401
     assert client.post(
@@ -39,7 +47,7 @@ def test_challenge_requires_bearer_and_rejects_wrong_secret():
 
 
 def test_issue_and_consume_returns_structured_allow_when_all_signals_pass():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     headers = {"Authorization": f"Bearer {SECRET}"}
     issue = client.post("/challenges", json={"profile_id": "alice"}, headers=headers)
     assert issue.status_code == 200
@@ -64,7 +72,7 @@ def test_issue_and_consume_returns_structured_allow_when_all_signals_pass():
 
 
 def test_valid_wrong_sequence_fails_closed_and_consumes_challenge():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     headers = {"Authorization": f"Bearer {SECRET}"}
     challenge = client.post(
         "/challenges", json={"profile_id": "alice"}, headers=headers
@@ -87,7 +95,7 @@ def test_valid_wrong_sequence_fails_closed_and_consumes_challenge():
 
 
 def test_missing_score_denies_without_claiming_identity_confidence():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     headers = {"Authorization": f"Bearer {SECRET}"}
     challenge = client.post(
         "/challenges", json={"profile_id": "alice"}, headers=headers
@@ -107,14 +115,14 @@ def test_missing_score_denies_without_claiming_identity_confidence():
 
 
 def test_bad_bind_configuration_is_rejected_before_endpoint_processing():
-    client = TestClient(create_app(make_settings(host="0.0.0.0")))
+    client = make_client(make_settings(host="0.0.0.0"))
     response = client.get("/health")
     assert response.status_code == 503
     assert response.json()["detail"] == "non_loopback_bind_rejected"
 
 
 def test_request_validation_rejects_invalid_payload():
-    client = TestClient(create_app(make_settings()))
+    client = make_client()
     headers = {"Authorization": f"Bearer {SECRET}"}
     response = client.post("/challenges", headers=headers, json={"profile_id": "../alice"})
     assert response.status_code == 422
