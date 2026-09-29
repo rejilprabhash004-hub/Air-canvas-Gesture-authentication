@@ -10,7 +10,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 4 | Gesture sequence state machine | Correct/wrong/repetition/timeout tests |
 | 5 | Consent-based enrollment of 10–20 normalized samples; local deletion | Consent, sample validation, path safety, no-overwrite, deletion tests; disclose plaintext profile storage |
 | 6 | Palm-normalized motion summaries from timestamped landmarks | Timing/order, normalization, movement-rate, malformed and out-of-frame tests |
-| 7 | Random Forest/SVM comparison | Held-out session evaluation; report only measured metrics |
+| 7 | Random Forest/SVM evaluator with session-disjoint holdout and standard classification metrics | Pipeline behavior tests; real performance claims require labeled multi-session data and measured results |
 | 8 | User-bound expiring single-use challenges | Expiry/reuse/replay tests |
 | 9 | Transparent combined decision | Threshold and failure-reason tests |
 | 10 | Loopback FastAPI | API tests; reject remote bind/unauthorized caller |
