@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecureAir controlled demo</title>
+</head>
+<body>
+  <main>
+    <h1>SecureAir controlled demo portal</h1>
+    <p>This local educational demo protects its resource on the server. Form inputs are caller-supplied and forgeable; this is not real authentication.</p>
+    <form action="/demo/decision" method="post">
+      <label for="sequence">Gesture sequence status</label>
+      <select id="sequence" name="sequence_status">
+        <option value="SUCCESS">Success</option>
+        <option value="FAILED">Failed</option>
+        <option value="TIMEOUT">Timeout</option>
+        <option value="IN_PROGRESS">In progress</option>
+      </select>
+      <label for="challenge">Demo challenge result</label>
+      <select id="challenge" name="challenge_success">
+        <option value="true">Success</option>
+        <option value="false">Failure</option>
+      </select>
+      <label for="score">Caller-supplied behavioral score (0–1)</label>
+      <input id="score" name="behavioral_match_score" type="number" min="0" max="1" step="0.01" required>
+      <label for="threshold">Decision threshold (0–1)</label>
+      <input id="threshold" name="threshold" type="number" min="0" max="1" step="0.01" value="0.8" required>
+      <button type="submit">Evaluate demo decision</button>
+    </form>
+    {% if result %}
+      <section aria-live="polite">
+        <h2>Server decision: {{ result.decision }}</h2>
+        <p>Reasons: {{ result.reasons | join(", ") }}</p>
+        {% if result.allowed %}<p><a href="/protected">Open protected demo resource</a></p>{% endif %}
+      </section>
+    {% endif %}
+    <form action="/logout" method="post"><button type="submit">Clear demo session</button></form>
+  </main>
+</body>
+</html>
