@@ -1,18 +1,17 @@
 """Loopback-only FastAPI demo portal with server-side decision checks.
 
-The portal is intentionally not integrated with camera or identity data. It
-accepts an educational demonstration decision signal, and the visitor can
-forge its values. Never use it to protect real resources.
+This educational portal is intentionally disconnected from camera and identity
+signals. Its submitted fields can be forged and must never protect real data.
 """
 from __future__ import annotations
 
 import ipaddress
 import secrets
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -36,10 +35,11 @@ def _loopback(client: str | None) -> bool:
 
 
 def create_demo_app() -> FastAPI:
-    """Create a small demo site with server-side authorization on its resource."""
+    """Create a small demo site with authorization enforced by the server."""
     app = FastAPI(title="SecureAir Controlled Demo Portal", version="0.1.0")
     app.state.demo_sessions = {}
-    templates = Jinja2Templates(directory="SecureAir/demo_portal/templates")
+    template_dir = Path(__file__).resolve().parent / "templates"
+    templates = Jinja2Templates(directory=str(template_dir))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -52,7 +52,7 @@ def create_demo_app() -> FastAPI:
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"request": request, "result": None},
+            context={"result": None},
         )
 
     @app.post("/demo/decision", response_class=HTMLResponse)
@@ -63,8 +63,10 @@ def create_demo_app() -> FastAPI:
         behavioral_match_score: Annotated[str, Form()],
         threshold: Annotated[str, Form()] = "0.8",
     ):
-        """Evaluate submitted demo fields, then keep authorization server-side."""
+        """Evaluate the demonstration fields; grant only a server-recorded session."""
         try:
+            if challenge_success not in {"true", "false"}:
+                raise ValueError("invalid challenge result")
             payload = DemoDecisionInput.model_validate({
                 "sequence_status": sequence_status,
                 "challenge_success": challenge_success == "true",
@@ -87,21 +89,21 @@ def create_demo_app() -> FastAPI:
         response = templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"request": request, "result": decision},
+            context={"result": decision},
         )
         response.set_cookie(
             "secureair_demo_session",
             session_id,
             httponly=True,
             samesite="strict",
-            secure=False,  # HTTP is allowed only on loopback for this local demo.
+            secure=False,  # This toy server is intended for loopback HTTP only.
             max_age=300,
         )
         return response
 
     @app.get("/protected", response_class=HTMLResponse)
     async def protected_resource(request: Request):
-        """Authorize at the server; hiding a link or client-side flag is insufficient."""
+        """Authorize at the server; a hidden link or client flag is not sufficient."""
         session_id = request.cookies.get("secureair_demo_session", "")
         if not session_id or app.state.demo_sessions.get(session_id) is not True:
             return HTMLResponse(
