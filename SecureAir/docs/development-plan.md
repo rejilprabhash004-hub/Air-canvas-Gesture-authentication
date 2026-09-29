@@ -9,7 +9,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 3 | Geometric classifier for five static gestures | Tests for known, ambiguous, absent, multiple hands |
 | 4 | Gesture sequence state machine | Correct/wrong/repetition/timeout tests |
 | 5 | Consent-based enrollment of 10–20 normalized samples; local deletion | Consent, sample validation, path safety, no-overwrite, deletion tests; disclose plaintext profile storage |
-| 6 | Normalized behavioral features | Tests for movement rates, normalization, out-of-frame cases |
+| 6 | Palm-normalized motion summaries from timestamped landmarks | Timing/order, normalization, movement-rate, malformed and out-of-frame tests |
 | 7 | Random Forest/SVM comparison | Held-out session evaluation; report only measured metrics |
 | 8 | User-bound expiring single-use challenges | Expiry/reuse/replay tests |
 | 9 | Transparent combined decision | Threshold and failure-reason tests |
