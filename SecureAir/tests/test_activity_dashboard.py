@@ -1,4 +1,4 @@
-"""Read-only activity dashboard query tests; no browser activity is collected."""
+"""Tests for token-gated read-only SecureAir activity queries."""
 import sqlite3
 
 import pytest
@@ -18,10 +18,7 @@ TOKEN = "dashboard-test-token-at-least-32-characters"
 def make_dashboard(tmp_path):
     db_path = initialize_database(tmp_path / DATABASE_FILENAME)
     with database_connection(db_path) as connection:
-        connection.execute(
-            "INSERT INTO profiles VALUES (?, ?, ?, ?)",
-            ("user_1", "created", "consented", "features-v1"),
-        )
+        connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("user_1", "created", "consented", "features-v1"))
     logger = SecurityEventLogger(db_path)
     logger.record("auth_attempt", "success", profile_id="user_1")
     logger.record("challenge_consume", "denied", profile_id="user_1")
@@ -33,22 +30,25 @@ def make_dashboard(tmp_path):
 def test_lists_minimized_v3_events_without_details_or_hashes(tmp_path):
     _, dashboard = make_dashboard(tmp_path)
     page = dashboard.list_events(TOKEN, limit=2)
-    assert page.total == 3
-    assert page.limit == 2
-    assert page.offset == 0
+    assert page.total == 3 and page.limit == 2 and page.offset == 0
     assert [row["event_type"] for row in page.items] == ["auth_attempt", "challenge_consume"]
-    assert all("details_json" not in row for row in page.items)
-    assert all("previous_hash" not in row and "event_hash" not in row for row in page.items)
+    assert all("details_json" not in row and "event_hash" not in row and "previous_hash" not in row for row in page.items)
     next_page = dashboard.list_events(TOKEN, limit=2, offset=2)
-    assert len(next_page.items) == 1
-    assert next_page.items[0]["event_type"] == "auth_attempt"
+    assert len(next_page.items) == 1 and next_page.items[0]["event_type"] == "auth_attempt"
 
 
-def test_filters_exact_type_outcome_and_timezone_aware_range(tmp_path):
+def test_rejects_tampered_chain_before_returning_any_rows(tmp_path):
+    db_path, dashboard = make_dashboard(tmp_path)
+    with database_connection(db_path) as connection:
+        connection.execute("UPDATE security_events SET outcome='denied' WHERE event_id=1")
+    with pytest.raises(ActivityDashboardError, match="integrity verification"):
+        dashboard.list_events(TOKEN)
+
+
+def test_filters_exact_type_and_outcome(tmp_path):
     _, dashboard = make_dashboard(tmp_path)
     page = dashboard.list_events(TOKEN, event_type="auth_attempt", outcome="success", limit=25)
-    assert page.total == 1
-    assert page.items[0]["event_type"] == "auth_attempt"
+    assert page.total == 1 and page.items[0]["event_type"] == "auth_attempt"
 
 
 def test_bad_token_is_denied(tmp_path):
@@ -72,21 +72,19 @@ def test_refuses_write_and_returns_no_raw_details_or_chain_hashes(tmp_path):
     db_path, dashboard = make_dashboard(tmp_path)
     page = dashboard.list_events(TOKEN)
     assert page.total == 3
-    assert all("details_json" not in row for row in page.items)
-    assert all("event_hash" not in row and "previous_hash" not in row for row in page.items)
+    assert all("details_json" not in row and "event_hash" not in row and "previous_hash" not in row for row in page.items)
     with pytest.raises(ActivityDashboardError):
         with dashboard._connect_read_only() as connection:
             connection.execute("DELETE FROM security_events")
 
 
-def test_refuses_unmarked_database_and_does_not_modify_it(tmp_path):
+def test_refuses_unmarked_database_without_modifying_it(tmp_path):
     path = tmp_path / DATABASE_FILENAME
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE unrelated (value TEXT)")
         connection.execute("INSERT INTO unrelated VALUES ('keep')")
-    dashboard = ActivityDashboard(path, TOKEN)
     with pytest.raises(ActivityDashboardError):
-        dashboard.list_events(TOKEN)
+        ActivityDashboard(path, TOKEN).list_events(TOKEN)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT value FROM unrelated").fetchone()[0] == "keep"
 
