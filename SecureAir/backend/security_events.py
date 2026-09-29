@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 import re
 import sqlite3
+from pathlib import Path
 from typing import Callable
 
 from backend.database import database_connection
@@ -54,7 +55,7 @@ class SecurityEventLogger:
 
     def __init__(
         self,
-        db_path: str,
+        db_path: str | Path,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
@@ -77,17 +78,21 @@ class SecurityEventLogger:
         email. Callers must not place secrets, tokens, frame data, landmarks,
         gesture sequences, or user-submitted strings in event fields.
         """
-        if event_type not in _EVENT_TYPES:
+        if not isinstance(event_type, str) or event_type not in _EVENT_TYPES:
             raise SecurityEventError("event_type is not allowlisted.")
-        if outcome not in _OUTCOMES:
+        if not isinstance(outcome, str) or outcome not in _OUTCOMES:
             raise SecurityEventError("outcome is not allowlisted.")
         if profile_id is not None and (
             not isinstance(profile_id, str) or not _PROFILE_ID.fullmatch(profile_id)
         ):
             raise SecurityEventError("profile_id must be a safe pseudonymous identifier.")
-        if reason_code is not None and reason_code not in _REASON_CODES:
+        if reason_code is not None and (
+            not isinstance(reason_code, str) or reason_code not in _REASON_CODES
+        ):
             raise SecurityEventError("reason_code is not allowlisted.")
-        if component is not None and component not in _COMPONENTS:
+        if component is not None and (
+            not isinstance(component, str) or component not in _COMPONENTS
+        ):
             raise SecurityEventError("component is not allowlisted.")
         if http_status is not None and (
             isinstance(http_status, bool) or not isinstance(http_status, int)
