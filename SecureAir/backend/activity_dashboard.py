@@ -1,8 +1,8 @@
 """Read-only, bearer-protected queries for minimized SecureAir activity events.
 
 The reader opens only the dedicated SecureAir database in SQLite read-only mode.
-It returns allowlisted event columns and deliberately excludes details_json.
-This module does not monitor browsing or collect new activity.
+It returns allowlisted event columns and deliberately excludes event details
+and chain hashes. This module does not monitor browsing or collect activity.
 """
 from __future__ import annotations
 
@@ -43,13 +43,12 @@ class ActivityPage:
 
 
 class ActivityDashboard:
-    """Read-only query service for an initialized SecureAir schema-v2 database.
+    """Read-only query service for an initialized SecureAir schema-v3 database.
 
     The local access token must be supplied for each query and is compared in
     constant time. The database is opened with SQLite ``mode=ro`` and
     ``query_only``; malformed or foreign databases are rejected, never migrated.
     """
-
     def __init__(self, db_path: str | Path, access_token: str) -> None:
         self._path = Path(db_path).expanduser()
         if self._path.name != DATABASE_FILENAME or self._path.is_symlink():
@@ -69,10 +68,13 @@ class ActivityDashboard:
             app_id = connection.execute("PRAGMA application_id").fetchone()[0]
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             columns = tuple(row[1] for row in connection.execute('PRAGMA table_info("security_events")'))
-            expected = ("event_id", "occurred_at", "event_type", "outcome", "profile_id", "details_json")
+            expected = (
+                "event_id", "occurred_at", "event_type", "outcome", "profile_id",
+                "details_json", "previous_hash", "event_hash",
+            )
             if app_id != APPLICATION_ID or version != SCHEMA_VERSION or columns != expected:
                 connection.close()
-                raise ActivityDashboardError("Database is not a verified SecureAir schema-v2 database.")
+                raise ActivityDashboardError("Database is not a verified SecureAir schema-v3 database.")
             return connection
         except sqlite3.Error as exc:
             raise ActivityDashboardError("SecureAir activity data could not be read.") from exc
