@@ -1,6 +1,6 @@
 # SecureAir
 
-**Stage 12: privacy-conscious security event logger.** This remains an educational research prototype, not an authentication system.
+**Stage 13: explicit protected-site settings.** This remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
@@ -9,33 +9,36 @@
 - Consent-based local enrollment of 10–20 feature vectors and profile deletion. Profiles and feature data are sensitive, unencrypted local data; protect files and backups.
 - Palm-normalized motion feature extraction and Random Forest/RBF SVM evaluation with session-disjoint splits. No real labeled dataset or performance claims are included.
 - Unpredictable, user-bound, expiring, single-use challenges in process memory.
-- Fail-closed decision policy and loopback FastAPI service. The service currently trusts caller-supplied gesture observations and match scores; it is not a production authentication boundary.
-- An isolated SecureAir SQLite database with profile, enrollment sample, and event tables. Initialization refuses unrelated/unmarked databases and does not modify the legacy Flask database.
-- `backend/security_events.py`: SQLite security-event writer with allowlisted event types, outcomes, reason codes, and components. It rejects free-form details and does not accept credentials, challenge IDs, video, landmarks, or gesture sequences.
+- Fail-closed decision policy and loopback FastAPI service. The service currently trusts caller-supplied gesture observations and scores; it is not a production authentication boundary.
+- Isolated SecureAir SQLite database and privacy-conscious allowlisted security event logger. Events are not yet hash-chained.
+- `backend/protected_sites.py`: persistent explicit hostname settings with add/list/enable/disable/remove operations and exact-host matching. It performs no browser monitoring.
 
-## Event logging
+## Protected-site settings
 
-Initialize the separate SecureAir DB and record minimized event metadata:
+Use only the dedicated SecureAir database. Add a domain explicitly, then query/update the exact hostname:
 
 ```python
+from datetime import datetime, timezone
 from backend.config import load_settings
 from backend.database import database_path, initialize_database
-from backend.security_events import SecurityEventLogger
+from backend.protected_sites import ProtectedSiteStore
 
 settings = load_settings()
-db_path = initialize_database(database_path(settings))
-logger = SecurityEventLogger(db_path)
-logger.record(
-    "auth_attempt",
-    "denied",
-    profile_id="local_user_1",  # pseudonymous local ID, not a name/email
-    reason_code="challenge_failed",
-    http_status=401,
-    component="decision",
-)
+db_path = initialize_database(database_path(settings))  # migrates verified SecureAir v1 to v2
+sites = ProtectedSiteStore(db_path)
+now = datetime.now(timezone.utc).isoformat()
+sites.add("example.com", timestamp=now)
+print(sites.list())
+print(sites.is_enabled("example.com"))
+sites.set_enabled("example.com", False, timestamp=datetime.now(timezone.utc).isoformat())
+sites.remove("example.com")
 ```
 
-The logger stores UTC timestamps and allowlisted structured metadata only. Use a pseudonymous profile ID; do not log secrets, tokens, user-supplied text, raw frames/landmarks, gesture sequences, or model features. The logger is not a tamper-evident audit system; hash chaining is a later stage. Event and enrollment data remain local but are not encrypted. Apply OS-level protection to the data directory and backups.
+Hostnames are normalized to lowercase ASCII IDNA and stored as exact fully-qualified DNS names; URLs, paths, ports, and IP literals are rejected. Adding `example.com` does **not** implicitly configure `shop.example.com`. This store is only user-managed settings: it does not monitor or block browsing, and no extension integration exists yet. The schema migration upgrades only a verified SecureAir v1 database transactionally; unmarked or foreign databases remain refused and the legacy Flask database is untouched.
+
+## Database and privacy
+
+The dedicated file is `settings.data_dir / "secureair.sqlite3"`. Stored enrollment feature JSON and event metadata are local but not encrypted. Obtain consent and protect the data directory/backups. Security event fields are allowlisted and avoid free text, secrets, raw camera data, and gesture sequences; events are not yet tamper-evident.
 
 ## Run local API
 
@@ -50,7 +53,7 @@ $env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(3
 python -m backend.app
 ```
 
-The API defaults to `127.0.0.1:8000`; functional routes require a bearer token. Do not expose it to a network. Current challenge API observations and scores are caller supplied and forgeable; the webcam/detector and identity model are not integrated. Challenge state disappears on process restart.
+The API defaults to `127.0.0.1:8000`; functional routes require a bearer token. Do not expose it to a network. Current challenge observations and scores are caller supplied and forgeable; the webcam/detector and identity model are not integrated. Challenge state disappears on process restart.
 
 ## Checks
 
