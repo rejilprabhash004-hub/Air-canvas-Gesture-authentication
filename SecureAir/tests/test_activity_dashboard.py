@@ -1,6 +1,5 @@
 """Read-only activity dashboard query tests; no browser activity is collected."""
 import sqlite3
-from datetime import datetime, timezone
 
 import pytest
 
@@ -10,7 +9,6 @@ from backend.activity_dashboard import (
     ActivityDashboardError,
 )
 from backend.database import DATABASE_FILENAME, database_connection, initialize_database
-from backend.security_events import SecurityEventLogger
 
 TOKEN = "dashboard-test-token-at-least-32-characters"
 
@@ -83,11 +81,13 @@ def test_rejects_invalid_filters_and_ranges(tmp_path, kwargs):
         dashboard.list_events(TOKEN, **kwargs)
 
 
-def test_database_is_opened_read_only(tmp_path):
+def test_refuses_write_and_returns_no_raw_details(tmp_path):
     db_path, dashboard = make_dashboard(tmp_path)
-    dashboard.list_events(TOKEN)
-    with pytest.raises(sqlite3.OperationalError):
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
+    page = dashboard.list_events(TOKEN)
+    assert page.total == 3
+    assert all("details_json" not in row for row in page.items)
+    with pytest.raises(ActivityDashboardError):
+        with dashboard._connect_read_only() as connection:
             connection.execute("DELETE FROM security_events")
 
 
