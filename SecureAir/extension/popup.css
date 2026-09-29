@@ -1,0 +1,7 @@
+* { box-sizing: border-box; }
+body { margin: 0; width: 300px; color: #16202a; font: 14px system-ui, sans-serif; }
+main { padding: 16px; }
+h1 { margin: 0 0 12px; font-size: 20px; }
+#status { font-weight: 700; }
+.note { color: #555; font-size: 12px; line-height: 1.4; }
+button { min-height: 36px; padding: 6px 10px; }
