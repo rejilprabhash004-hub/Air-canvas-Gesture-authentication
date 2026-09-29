@@ -17,6 +17,14 @@ _EVENT_TYPES = frozenset({
     "profile_delete", "service_auth_failure",
 })
 _OUTCOMES = frozenset({"success", "failure", "denied", "error"})
+_COMPONENTS = frozenset({"api", "camera", "challenge", "enrollment", "decision", "storage"})
+_REASON_CODES = frozenset({
+    "all_required_signals_passed", "behavioral_match_below_threshold", "challenge_failed",
+    "challenge_expired", "challenge_already_used", "challenge_profile_mismatch",
+    "gesture_sequence_failed", "gesture_sequence_timeout", "invalid_behavioral_match_score",
+    "invalid_challenge_result", "invalid_sequence_status", "invalid_threshold", "invalid_user",
+    "lockout_active", "rate_limited", "storage_error", "unknown",
+})
 _DETAIL_KEYS = frozenset({"reason_code", "http_status", "component"})
 
 
@@ -62,10 +70,10 @@ def canonical_event_bytes(event: Mapping[str, Any]) -> bytes:
         raise SecurityEventHashError("details_json must contain a valid JSON object.") from exc
     if not isinstance(details, dict) or any(key not in _DETAIL_KEYS for key in details):
         raise SecurityEventHashError("details_json must be an object with allowlisted keys.")
-    if "reason_code" in details and not isinstance(details["reason_code"], str):
-        raise SecurityEventHashError("details_json reason_code must be a string.")
-    if "component" in details and not isinstance(details["component"], str):
-        raise SecurityEventHashError("details_json component must be a string.")
+    if "reason_code" in details and details["reason_code"] not in _REASON_CODES:
+        raise SecurityEventHashError("details_json reason_code is not allowlisted.")
+    if "component" in details and details["component"] not in _COMPONENTS:
+        raise SecurityEventHashError("details_json component is not allowlisted.")
     if "http_status" in details and (
         isinstance(details["http_status"], bool)
         or not isinstance(details["http_status"], int)
