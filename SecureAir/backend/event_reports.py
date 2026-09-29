@@ -1,7 +1,7 @@
 """Privacy-minimized CSV, JSON, and PDF exports for SecureAir event queries.
 
-Exports operate only on records already returned by the read-only dashboard;
-they do not open the database or include event details or chain hashes.
+Exports accept only bounded, already-minimized dashboard records. They do not
+open the database or include event details or chain hashes.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ _EVENT_TYPES = frozenset({
 })
 _OUTCOMES = frozenset({"success", "failure", "denied", "error"})
 _MAX_EVENTS = 10_000
+_MAX_FIELD_CHARS = 256
 _LINES_PER_PAGE = 48
 _LINE_WIDTH = 88
 
@@ -30,26 +31,31 @@ def _validated_events(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any
     if isinstance(events, (str, bytes, Mapping)):
         raise EventReportError("events must be an iterable of minimized event records.")
     try:
-        rows = list(events)
+        iterator = iter(events)
     except TypeError as exc:
         raise EventReportError("events must be iterable.") from exc
-    if len(rows) > _MAX_EVENTS:
-        raise EventReportError(f"reports are limited to {_MAX_EVENTS} events.")
     result: list[dict[str, Any]] = []
-    for row in rows:
+    for row in iterator:
+        if len(result) >= _MAX_EVENTS:
+            raise EventReportError(f"reports are limited to {_MAX_EVENTS} events.")
         if not isinstance(row, Mapping) or set(row) != set(_FIELDS):
             raise EventReportError("each record must contain only minimized dashboard fields.")
         event_id = row["event_id"]
         if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id < 1:
             raise EventReportError("event_id must be a positive integer.")
         for field in ("occurred_at", "event_type", "outcome"):
-            if not isinstance(row[field], str) or not row[field]:
+            value = row[field]
+            if not isinstance(value, str) or not value:
                 raise EventReportError(f"{field} must be a non-empty string.")
+            if len(value) > _MAX_FIELD_CHARS:
+                raise EventReportError(f"{field} exceeds the {_MAX_FIELD_CHARS}-character limit.")
         if row["event_type"] not in _EVENT_TYPES or row["outcome"] not in _OUTCOMES:
             raise EventReportError("event_type or outcome is not allowlisted.")
         profile_id = row["profile_id"]
-        if profile_id is not None and not isinstance(profile_id, str):
-            raise EventReportError("profile_id must be a string or null.")
+        if profile_id is not None and (
+            not isinstance(profile_id, str) or len(profile_id) > _MAX_FIELD_CHARS
+        ):
+            raise EventReportError("profile_id must be null or a string within the field limit.")
         result.append({field: row[field] for field in _FIELDS})
     return result
 
@@ -89,16 +95,11 @@ def _pdf_text(value: str) -> str:
 def _wrap_line(line: str, width: int = _LINE_WIDTH) -> list[str]:
     if len(line) <= width:
         return [line]
-    parts: list[str] = []
-    remaining = line
-    while remaining:
-        parts.append(remaining[:width])
-        remaining = remaining[width:]
-    return parts
+    return [line[start:start + width] for start in range(0, len(line), width)]
 
 
 def _pdf_document(pages: list[list[str]]) -> bytes:
-    """Build a small standards-compliant PDF using only the Python standard library."""
+    """Build a paginated PDF using only the Python standard library."""
     objects: list[bytes | None] = [None] * (3 + len(pages) * 2)
     page_refs = [f"{4 + index * 2} 0 R" for index in range(len(pages))]
     objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
