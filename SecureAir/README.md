@@ -11,7 +11,7 @@
 - `gesture/enrollment.py`: explicit-consent enrollment of 10–20 normalized 63-feature samples, with local profile deletion.
 - Synthetic tests for validation and state behavior; no webcam is needed for unit tests.
 
-Enrollment accepts normalized feature vectors only, not camera frames. It refuses missing consent, malformed or non-finite samples, invalid profile IDs, and overwriting an existing profile. Profile JSON is stored in `data/profiles/` as **unencrypted, sensitive biometric-derived data**. Use only on a device you control; protect the data directory and backups, do not sync it to shared/cloud storage, and use `delete_profile(data_dir, profile_id)` when deleting an enrollment. File deletion does not guarantee secure erasure from backups or storage media. This stage does not itself verify identity or authenticate.
+Enrollment accepts normalized feature vectors only, not camera frames. It refuses missing consent, malformed or non-finite samples, invalid profile IDs, and overwriting an existing profile. Profiles are stored under the configured `data_dir` in `profiles/` as **unencrypted, sensitive biometric-derived JSON**. Use only on a device you control; protect the data directory and backups, do not sync it to shared/cloud storage, and use `delete_profile(data_dir, profile_id)` when deleting an enrollment. File deletion does not guarantee secure erasure from backups or storage media. This stage does not itself verify identity or authenticate.
 
 ## Windows setup and checks
 
