@@ -3,18 +3,33 @@ import sqlite3
 
 import pytest
 
+from backend.config import Settings
 from backend.database import (
     APPLICATION_ID,
     DATABASE_FILENAME,
     SCHEMA_VERSION,
     DatabaseError,
     database_connection,
+    database_path,
     initialize_database,
 )
 
 
 def db_path(tmp_path):
     return tmp_path / DATABASE_FILENAME
+
+
+def test_database_path_uses_configured_data_directory(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "private-data",
+        host="127.0.0.1",
+        port=8000,
+        secret_key="x" * 40,
+        lockout_max_attempts=3,
+        lockout_seconds=300,
+        challenge_seconds=60,
+    )
+    assert database_path(settings) == tmp_path / "private-data" / DATABASE_FILENAME
 
 
 def test_initialize_creates_isolated_schema_and_is_idempotent(tmp_path):
@@ -32,6 +47,7 @@ def test_initialize_creates_isolated_schema_and_is_idempotent(tmp_path):
             )
         }
         assert {"profiles", "enrollment_samples", "security_events"} <= tables
+        # SQLite connections default foreign keys off; app connections enable them.
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
 
 
