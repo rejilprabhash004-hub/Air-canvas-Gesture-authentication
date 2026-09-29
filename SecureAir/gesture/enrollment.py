@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Sequence
 
-from gesture.landmarks import LANDMARK_COUNT, COORDINATE_COUNT
+from gesture.landmarks import COORDINATE_COUNT, LANDMARK_COUNT
 
 FEATURE_COUNT = LANDMARK_COUNT * COORDINATE_COUNT
 MIN_SAMPLES = 10
@@ -70,9 +70,9 @@ def enroll_profile(
     if consent is not True:
         raise EnrollmentError("Explicit consent is required before profile enrollment.")
     vectors = _validated_samples(samples)
-    directory = Path(data_dir).expanduser() / "profiles"
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = _profile_path(directory, profile_id)
+    root = Path(data_dir).expanduser()
+    path = _profile_path(root, profile_id)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
         "version": PROFILE_VERSION,
         "profile_id": profile_id,
@@ -83,7 +83,10 @@ def enroll_profile(
     }
     encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(path, flags, 0o600)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError as exc:
+        raise ProfileExistsError(f"A profile already exists for {profile_id!r}.") from exc
     try:
         with os.fdopen(descriptor, "wb") as output:
             output.write(encoded)
