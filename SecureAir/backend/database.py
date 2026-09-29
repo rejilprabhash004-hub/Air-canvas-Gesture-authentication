@@ -17,7 +17,8 @@ from backend.config import Settings
 
 DATABASE_FILENAME = "secureair.sqlite3"
 APPLICATION_ID = 0x53414952  # ASCII-ish marker: "SAIR"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+GENESIS_HASH = "0" * 64
 
 _SCHEMA_V1_STATEMENTS = (
     """CREATE TABLE profiles (
@@ -45,6 +46,8 @@ _SCHEMA_V1_STATEMENTS = (
         outcome TEXT NOT NULL,
         profile_id TEXT,
         details_json TEXT NOT NULL,
+        previous_hash TEXT NOT NULL,
+        event_hash TEXT NOT NULL,
         FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE SET NULL
     )""",
     """CREATE INDEX idx_security_events_occurred_at
@@ -56,18 +59,21 @@ _PROTECTED_SITES_STATEMENT = """CREATE TABLE protected_sites (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )"""
+_EVENT_COLUMNS_V1 = (
+    "event_id", "occurred_at", "event_type", "outcome", "profile_id", "details_json",
+)
+_EVENT_COLUMNS_V3 = _EVENT_COLUMNS_V1 + ("previous_hash", "event_hash")
 _EXPECTED_COLUMNS = {
     "profiles": ("profile_id", "created_at", "consent_at", "feature_schema"),
     "enrollment_samples": (
         "sample_id", "profile_id", "session_id", "sample_number", "features_json", "created_at",
     ),
-    "security_events": (
-        "event_id", "occurred_at", "event_type", "outcome", "profile_id", "details_json",
-    ),
+    "security_events": _EVENT_COLUMNS_V3,
     "protected_sites": ("domain", "enabled", "created_at", "updated_at"),
 }
 _EXPECTED_TABLES_V1 = {"profiles", "enrollment_samples", "security_events"}
 _EXPECTED_TABLES_V2 = _EXPECTED_TABLES_V1 | {"protected_sites"}
+_EXPECTED_TABLES_V3 = _EXPECTED_TABLES_V2
 
 
 class DatabaseError(ValueError):
@@ -113,24 +119,42 @@ def _user_tables(connection: sqlite3.Connection) -> set[str]:
     }
 
 
-def _has_expected_columns(connection: sqlite3.Connection, tables: set[str]) -> bool:
-    """Check structural table signatures before trusting an app/schema marker."""
-    for table in tables:
-        columns = tuple(
-            row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')
-        )
-        if columns != _EXPECTED_COLUMNS[table]:
+def _has_columns(connection: sqlite3.Connection, expected: dict[str, tuple[str, ...]]) -> bool:
+    for table, expected_columns in expected.items():
+        columns = tuple(row[1] for row in connection.execute(f'PRAGMA table_info("{table}")'))
+        if columns != expected_columns:
             return False
     return True
 
 
-def initialize_database(db_path: str | Path) -> Path:
-    """Create schema v2 or safely migrate a verified SecureAir v1 database.
+def _backfill_event_chain(connection: sqlite3.Connection) -> None:
+    """Build the v3 chain over existing v2 rows while migration is locked."""
+    from backend.security_event_chain import hash_chained_event
 
-    Existing unmarked databases, including the legacy application database,
-    are refused without changing their contents. The sole migration accepted
-    is the SecureAir v1 table/column signature, upgraded transactionally with
-    the new ``protected_sites`` table. Schema DDL and markers commit together.
+    previous_hash = GENESIS_HASH
+    rows = connection.execute(
+        "SELECT event_id, occurred_at, event_type, outcome, profile_id, details_json "
+        "FROM security_events ORDER BY event_id ASC"
+    ).fetchall()
+    for row in rows:
+        event = {key: row[key] for key in _EVENT_COLUMNS_V1}
+        try:
+            event_hash = hash_chained_event(event, previous_hash)
+        except ValueError as exc:
+            raise DatabaseError("Existing security event cannot be safely migrated.") from exc
+        connection.execute(
+            "UPDATE security_events SET previous_hash = ?, event_hash = ? WHERE event_id = ?",
+            (previous_hash, event_hash, row["event_id"]),
+        )
+        previous_hash = event_hash
+
+
+def initialize_database(db_path: str | Path) -> Path:
+    """Create schema v3 or transactionally migrate verified SecureAir v1/v2 DBs.
+
+    The v2-to-v3 migration adds chain columns and backfills existing rows in
+    event_id order under an exclusive transaction. Unmarked and foreign DBs
+    are refused without modification.
     """
     path = _validate_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,11 +162,11 @@ def initialize_database(db_path: str | Path) -> Path:
         raise DatabaseError("SecureAir database path must not be a symbolic link.")
 
     connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
+    connection.row_factory = sqlite3.Row
     try:
         application_id = connection.execute("PRAGMA application_id").fetchone()[0]
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         existing_tables = _user_tables(connection)
-
         if application_id not in (0, APPLICATION_ID):
             raise DatabaseError("Existing database belongs to a different application.")
         if user_version > SCHEMA_VERSION:
@@ -150,42 +174,66 @@ def initialize_database(db_path: str | Path) -> Path:
         if application_id == 0 and (user_version != 0 or existing_tables):
             raise DatabaseError("Unmarked existing database will not be modified.")
 
-        if application_id == APPLICATION_ID:
-            if user_version == 1:
-                if (existing_tables != _EXPECTED_TABLES_V1
-                        or not _has_expected_columns(connection, _EXPECTED_TABLES_V1)):
-                    raise DatabaseError("SecureAir v1 database schema is incomplete or unexpected.")
-                connection.execute("BEGIN EXCLUSIVE")
-                if (connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
-                        or connection.execute("PRAGMA user_version").fetchone()[0] != 1
-                        or _user_tables(connection) != _EXPECTED_TABLES_V1
-                        or not _has_expected_columns(connection, _EXPECTED_TABLES_V1)):
-                    raise DatabaseError("Database changed during migration; refusing modification.")
-                connection.execute(_PROTECTED_SITES_STATEMENT)
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                connection.commit()
-                if os.name == "posix":
-                    os.chmod(path, 0o600)
-                return path
-            if (user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V2
-                    or not _has_expected_columns(connection, _EXPECTED_TABLES_V2)):
-                raise DatabaseError("SecureAir database schema is incomplete or unsupported.")
+        if application_id == 0:
+            connection.execute("BEGIN EXCLUSIVE")
+            if (connection.execute("PRAGMA application_id").fetchone()[0] != 0
+                    or connection.execute("PRAGMA user_version").fetchone()[0] != 0
+                    or _user_tables(connection)):
+                raise DatabaseError("Database changed during initialization; refusing modification.")
+            for statement in _SCHEMA_V1_STATEMENTS:
+                connection.execute(statement)
+            connection.execute(_PROTECTED_SITES_STATEMENT)
+            connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+            if os.name == "posix":
+                os.chmod(path, 0o600)
             return path
 
-        # Serialize first-time initialization and re-check before writing.
-        connection.execute("BEGIN EXCLUSIVE")
-        if (connection.execute("PRAGMA application_id").fetchone()[0] != 0
-                or connection.execute("PRAGMA user_version").fetchone()[0] != 0
-                or _user_tables(connection)):
-            raise DatabaseError("Database changed during initialization; refusing modification.")
-        for statement in _SCHEMA_V1_STATEMENTS:
-            connection.execute(statement)
-        connection.execute(_PROTECTED_SITES_STATEMENT)
-        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        connection.commit()
-        if os.name == "posix":
-            os.chmod(path, 0o600)
+        if user_version == 1:
+            if existing_tables != _EXPECTED_TABLES_V1:
+                raise DatabaseError("SecureAir v1 database schema is incomplete or unexpected.")
+            expected_v1 = {
+                "profiles": _EXPECTED_COLUMNS["profiles"],
+                "enrollment_samples": _EXPECTED_COLUMNS["enrollment_samples"],
+                "security_events": _EVENT_COLUMNS_V1,
+            }
+            if not _has_columns(connection, expected_v1):
+                raise DatabaseError("SecureAir v1 database schema is incomplete or unexpected.")
+            connection.execute("BEGIN EXCLUSIVE")
+            connection.execute(_PROTECTED_SITES_STATEMENT)
+            connection.execute("PRAGMA user_version = 2")
+            user_version = 2
+            existing_tables = _EXPECTED_TABLES_V2
+
+        if user_version == 2:
+            expected_v2 = {
+                "profiles": _EXPECTED_COLUMNS["profiles"],
+                "enrollment_samples": _EXPECTED_COLUMNS["enrollment_samples"],
+                "security_events": _EVENT_COLUMNS_V1,
+                "protected_sites": _EXPECTED_COLUMNS["protected_sites"],
+            }
+            if existing_tables != _EXPECTED_TABLES_V2 or not _has_columns(connection, expected_v2):
+                raise DatabaseError("SecureAir v2 database schema is incomplete or unexpected.")
+            if not connection.in_transaction:
+                connection.execute("BEGIN EXCLUSIVE")
+            # Recheck version/tables after acquiring the migration lock.
+            if (connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
+                    or connection.execute("PRAGMA user_version").fetchone()[0] != 2
+                    or _user_tables(connection) != _EXPECTED_TABLES_V2):
+                raise DatabaseError("Database changed during migration; refusing modification.")
+            connection.execute("ALTER TABLE security_events ADD COLUMN previous_hash TEXT")
+            connection.execute("ALTER TABLE security_events ADD COLUMN event_hash TEXT")
+            _backfill_event_chain(connection)
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+            if os.name == "posix":
+                os.chmod(path, 0o600)
+            return path
+
+        if (user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V3
+                or not _has_columns(connection, _EXPECTED_COLUMNS)):
+            raise DatabaseError("SecureAir database schema is incomplete or unsupported.")
         return path
     except Exception:
         if connection.in_transaction:
