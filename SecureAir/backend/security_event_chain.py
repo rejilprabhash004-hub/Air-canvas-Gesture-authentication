@@ -9,7 +9,11 @@ import re
 import sqlite3
 from typing import Any
 
-from backend.database import database_connection
+from backend.database import (
+    PROFILE_DELETE_GUARD_SQL,
+    PROFILE_DELETE_GUARD_TRIGGER,
+    database_connection,
+)
 from backend.security_event_hashes import SecurityEventHashError, hash_security_event
 
 GENESIS_HASH = "0" * 64
@@ -94,9 +98,9 @@ def _rechain_all_events(connection: sqlite3.Connection) -> None:
 def delete_profile_and_rechain(db_path: str, profile_id: str) -> bool:
     """Delete a profile and atomically re-chain nullified event references.
 
-    The existing chain is verified before mutation. Profile deletion intentionally
-    changes historical profile_id fields due to ON DELETE SET NULL; all rows are
-    re-chained in the same transaction. This has no external trust anchor.
+    The database trigger rejects direct profile deletes. This helper verifies
+    history, removes that guard only inside an exclusive write transaction,
+    deletes the profile, re-chains, and restores the guard before committing.
     """
     if not isinstance(profile_id, str) or not profile_id:
         raise SecurityEventChainError("profile_id must be a non-empty string.")
@@ -106,9 +110,13 @@ def delete_profile_and_rechain(db_path: str, profile_id: str) -> bool:
             before = verify_event_connection(connection)
             if not before.valid:
                 raise SecurityEventChainError("profile deletion refused because event history is invalid.")
+            # The write lock ensures no other connection can delete during this
+            # narrowly scoped guard removal; rollback restores trigger changes.
+            connection.execute(f'DROP TRIGGER IF EXISTS "{PROFILE_DELETE_GUARD_TRIGGER}"')
             cursor = connection.execute("DELETE FROM profiles WHERE profile_id = ?", (profile_id,))
             if cursor.rowcount:
                 _rechain_all_events(connection)
+            connection.execute(PROFILE_DELETE_GUARD_SQL)
             return cursor.rowcount > 0
     except SecurityEventChainError:
         raise
@@ -117,11 +125,7 @@ def delete_profile_and_rechain(db_path: str, profile_id: str) -> bool:
 
 
 def verify_security_event_chain(db_path: str) -> ChainVerificationResult:
-    """Verify every stored event and predecessor link in event_id order.
-
-    Returns the first failing event ID rather than exposing event contents. An
-    empty chain is valid. Database access failures raise SecurityEventChainError.
-    """
+    """Verify every stored event and predecessor link in event_id order."""
     try:
         with database_connection(db_path) as connection:
             return verify_event_connection(connection)
