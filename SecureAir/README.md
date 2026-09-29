@@ -1,22 +1,25 @@
 # SecureAir
 
-**Stage 19: canonical security-event hashing helper.** SecureAir remains an educational research prototype, not an authentication system.
+**Stage 20: transactional hash chain for backend security events.** SecureAir remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
 - Local MediaPipe hand detection, normalized landmarks, five geometric gesture labels, and an ordered sequence state machine. Camera frames are processed locally and not stored.
 - Consent-based enrollment and gesture-classification evaluation. No labeled biometric dataset or validated identity-confidence model is included; no accuracy claim is made.
 - User-bound, expiring, single-use challenges; fail-closed decisions; and a loopback FastAPI API. Gesture observations and behavioral scores remain caller-supplied and forgeable.
-- Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted; backend events are not yet hash-chained.
+- Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted.
 - A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor in the background.
-- `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries; raw event details are excluded. This is a library module, not an HTTP dashboard.
-- `backend/security_event_hashes.py`: deterministic canonical JSON and SHA-256 digest helpers for database security-event rows. Hashing is a pure computation only; hashes are not stored, and the database schema is unchanged.
+- `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries; raw event details and chain hashes are excluded. This is a library module, not an HTTP dashboard.
+- `backend/security_event_hashes.py`: canonical event encoding and SHA-256 digest helper.
+- `backend/security_event_chain.py`: schema-v3 chain verification and profile deletion/re-chaining helpers. The event logger appends new database events and their chain links in one SQLite transaction.
 
-## Canonical event hash helper
+## Backend event integrity chain
 
-`canonical_event_bytes(event_row)` expects exactly the six columns of a `security_events` row: `event_id`, `occurred_at`, `event_type`, `outcome`, `profile_id`, and `details_json`. It validates the allowlisted event fields and details, parses and canonicalizes `details_json` independent of object-key order and whitespace, and returns canonical UTF-8 JSON bytes. `hash_security_event(event_row)` returns those bytes' lowercase SHA-256 digest.
+New SecureAir databases use schema version 3. Existing, structurally verified v1 or v2 SecureAir databases migrate transactionally; v1 first gains the protected-sites table, and existing event rows are linked in event-ID order. Invalid legacy event metadata stops the migration and rolls back, so correct malformed events before retrying. Unmarked or unrelated databases continue to be refused.
 
-This helper does not prove authenticity by itself: a digest recomputed over altered data will also change. The helper does not persist hashes, detect database edits, or provide a chain. Those persistence/verification stages are separate. Existing database rows and schema need no migration for this helper.
+Each backend security event stores `previous_hash` and `event_hash`. The first predecessor is 64 zeroes. The event digest uses the Stage 19 canonical event representation; the chain digest binds that digest to the predecessor with a versioned domain separator. The logger inserts the event and chain fields atomically. `verify_security_event_chain(db_path)` checks rows in event-ID order and returns the first failing event ID without event contents. `delete_profile_and_rechain(db_path, profile_id)` verifies history before deletion, then applies the existing profile-reference nullification and re-chains atomically to respect the privacy deletion behavior.
+
+The chain detects accidental or uncoordinated edits when verified; it does not stop an attacker with database write access from changing events and recomputing the entire chain. There is no external trust anchor, digital signature, or remote checkpoint. Protect local database files and backups. The schema migration does not connect or alter the separate Stage 18 extension-local event history.
 
 ## Extension-local event history
 
@@ -66,7 +69,7 @@ Visit `http://127.0.0.1:8765/`. Portal requests and consumes challenges from the
 
 ## Privacy and validation
 
-The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, and extension event history are local and unencrypted. The extension list and history are separate from Python SQLite.
+The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, chain hashes, and extension event history are local and unencrypted. The extension list and history are separate from Python SQLite.
 
 ```powershell
 python -m pytest
