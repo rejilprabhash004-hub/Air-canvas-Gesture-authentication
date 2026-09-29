@@ -4,7 +4,7 @@ The SecureAir database has a fixed filename and application ID. Initialization
 refuses a pre-existing unrelated SQLite database rather than altering the
 legacy project's database. The schema stores enrollment feature JSON locally;
 callers must obtain consent and protect the containing directory and backups.
-""" 
+"""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -56,6 +56,16 @@ _PROTECTED_SITES_STATEMENT = """CREATE TABLE protected_sites (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )"""
+_EXPECTED_COLUMNS = {
+    "profiles": ("profile_id", "created_at", "consent_at", "feature_schema"),
+    "enrollment_samples": (
+        "sample_id", "profile_id", "session_id", "sample_number", "features_json", "created_at",
+    ),
+    "security_events": (
+        "event_id", "occurred_at", "event_type", "outcome", "profile_id", "details_json",
+    ),
+    "protected_sites": ("domain", "enabled", "created_at", "updated_at"),
+}
 _EXPECTED_TABLES_V1 = {"profiles", "enrollment_samples", "security_events"}
 _EXPECTED_TABLES_V2 = _EXPECTED_TABLES_V1 | {"protected_sites"}
 
@@ -103,13 +113,24 @@ def _user_tables(connection: sqlite3.Connection) -> set[str]:
     }
 
 
+def _has_expected_columns(connection: sqlite3.Connection, tables: set[str]) -> bool:
+    """Check structural table signatures before trusting an app/schema marker."""
+    for table in tables:
+        columns = tuple(
+            row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')
+        )
+        if columns != _EXPECTED_COLUMNS[table]:
+            return False
+    return True
+
+
 def initialize_database(db_path: str | Path) -> Path:
     """Create schema v2 or safely migrate a verified SecureAir v1 database.
 
     Existing unmarked databases, including the legacy application database,
     are refused without changing their contents. The sole migration accepted
-    is the exact SecureAir v1 schema, upgraded transactionally with the new
-    ``protected_sites`` table. Schema DDL and markers commit together.
+    is the SecureAir v1 table/column signature, upgraded transactionally with
+    the new ``protected_sites`` table. Schema DDL and markers commit together.
     """
     path = _validate_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,12 +152,14 @@ def initialize_database(db_path: str | Path) -> Path:
 
         if application_id == APPLICATION_ID:
             if user_version == 1:
-                if existing_tables != _EXPECTED_TABLES_V1:
+                if (existing_tables != _EXPECTED_TABLES_V1
+                        or not _has_expected_columns(connection, _EXPECTED_TABLES_V1)):
                     raise DatabaseError("SecureAir v1 database schema is incomplete or unexpected.")
                 connection.execute("BEGIN EXCLUSIVE")
                 if (connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
                         or connection.execute("PRAGMA user_version").fetchone()[0] != 1
-                        or _user_tables(connection) != _EXPECTED_TABLES_V1):
+                        or _user_tables(connection) != _EXPECTED_TABLES_V1
+                        or not _has_expected_columns(connection, _EXPECTED_TABLES_V1)):
                     raise DatabaseError("Database changed during migration; refusing modification.")
                 connection.execute(_PROTECTED_SITES_STATEMENT)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -144,7 +167,8 @@ def initialize_database(db_path: str | Path) -> Path:
                 if os.name == "posix":
                     os.chmod(path, 0o600)
                 return path
-            if user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V2:
+            if (user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V2
+                    or not _has_expected_columns(connection, _EXPECTED_TABLES_V2)):
                 raise DatabaseError("SecureAir database schema is incomplete or unsupported.")
             return path
 
