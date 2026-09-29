@@ -19,6 +19,11 @@ DATABASE_FILENAME = "secureair.sqlite3"
 APPLICATION_ID = 0x53414952  # ASCII-ish marker: "SAIR"
 SCHEMA_VERSION = 3
 GENESIS_HASH = "0" * 64
+PROFILE_DELETE_GUARD_TRIGGER = "secureair_guard_profile_delete"
+PROFILE_DELETE_GUARD_SQL = (
+    "CREATE TRIGGER secureair_guard_profile_delete BEFORE DELETE ON profiles "
+    "BEGIN SELECT RAISE(ABORT, 'profile deletion requires chain-aware helper'); END"
+)
 
 _SCHEMA_V1_STATEMENTS = (
     """CREATE TABLE profiles (
@@ -127,6 +132,21 @@ def _has_columns(connection: sqlite3.Connection, expected: dict[str, tuple[str, 
     return True
 
 
+def _ensure_profile_delete_guard(connection: sqlite3.Connection) -> None:
+    """Install the exact chain-aware deletion guard or refuse altered triggers."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?",
+        (PROFILE_DELETE_GUARD_TRIGGER,),
+    ).fetchone()
+    if row is None:
+        connection.execute(PROFILE_DELETE_GUARD_SQL)
+        return
+    existing = " ".join(row[0].split()).casefold()
+    expected = " ".join(PROFILE_DELETE_GUARD_SQL.split()).casefold()
+    if existing != expected:
+        raise DatabaseError("SecureAir profile deletion guard is unexpected.")
+
+
 def _backfill_event_chain(connection: sqlite3.Connection) -> None:
     """Build the v3 chain over existing v2 rows while migration is locked."""
     from backend.security_event_chain import hash_chained_event
@@ -154,7 +174,8 @@ def initialize_database(db_path: str | Path) -> Path:
 
     The v2-to-v3 migration adds chain columns and backfills existing rows in
     event_id order under an exclusive transaction. Unmarked and foreign DBs
-    are refused without modification.
+    are refused without modification. A database trigger blocks direct profile
+    deletion so callers must use the chain-aware deletion helper.
     """
     path = _validate_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +204,7 @@ def initialize_database(db_path: str | Path) -> Path:
             for statement in _SCHEMA_V1_STATEMENTS:
                 connection.execute(statement)
             connection.execute(_PROTECTED_SITES_STATEMENT)
+            _ensure_profile_delete_guard(connection)
             connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
@@ -217,7 +239,6 @@ def initialize_database(db_path: str | Path) -> Path:
                 raise DatabaseError("SecureAir v2 database schema is incomplete or unexpected.")
             if not connection.in_transaction:
                 connection.execute("BEGIN EXCLUSIVE")
-            # Recheck version/tables after acquiring the migration lock.
             if (connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
                     or connection.execute("PRAGMA user_version").fetchone()[0] != 2
                     or _user_tables(connection) != _EXPECTED_TABLES_V2):
@@ -225,6 +246,7 @@ def initialize_database(db_path: str | Path) -> Path:
             connection.execute("ALTER TABLE security_events ADD COLUMN previous_hash TEXT")
             connection.execute("ALTER TABLE security_events ADD COLUMN event_hash TEXT")
             _backfill_event_chain(connection)
+            _ensure_profile_delete_guard(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
             if os.name == "posix":
@@ -234,6 +256,10 @@ def initialize_database(db_path: str | Path) -> Path:
         if (user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V3
                 or not _has_columns(connection, _EXPECTED_COLUMNS)):
             raise DatabaseError("SecureAir database schema is incomplete or unsupported.")
+        # Install the delete guard on existing v3 databases, atomically.
+        connection.execute("BEGIN EXCLUSIVE")
+        _ensure_profile_delete_guard(connection)
+        connection.commit()
         return path
     except Exception:
         if connection.in_transaction:
