@@ -3,13 +3,7 @@ import json
 
 import pytest
 
-from gesture.enrollment import (
-    FEATURE_COUNT,
-    EnrollmentError,
-    ProfileExistsError,
-    delete_profile,
-    enroll_profile,
-)
+from gesture.enrollment import FEATURE_COUNT, EnrollmentError, delete_profile, enroll_profile
 
 
 def samples(count=10):
