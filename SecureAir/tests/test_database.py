@@ -32,22 +32,21 @@ def test_database_path_uses_configured_data_directory(tmp_path):
     assert database_path(settings) == tmp_path / "private-data" / DATABASE_FILENAME
 
 
-def test_initialize_creates_isolated_schema_and_is_idempotent(tmp_path):
+def test_initialize_creates_v2_schema_and_is_idempotent(tmp_path):
     path = db_path(tmp_path)
     assert initialize_database(path) == path
     assert initialize_database(path) == path
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert {"profiles", "enrollment_samples", "security_events"} <= tables
-        # SQLite connections default foreign keys off; app connections enable them.
+        assert {"profiles", "enrollment_samples", "security_events", "protected_sites"} <= tables
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
 
 
@@ -76,10 +75,8 @@ def test_rejects_legacy_or_unmarked_existing_database_without_modifying_it(tmp_p
         connection.execute("CREATE TABLE legacy_users (id INTEGER PRIMARY KEY)")
         connection.execute("INSERT INTO legacy_users VALUES (7)")
     before = path.read_bytes()
-
     with pytest.raises(DatabaseError, match="Unmarked existing database"):
         initialize_database(path)
-
     assert path.read_bytes() == before
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT id FROM legacy_users").fetchone()[0] == 7
@@ -91,10 +88,8 @@ def test_rejects_database_marked_for_another_application_without_modifying_it(tm
         connection.execute("PRAGMA application_id = 12345")
         connection.execute("CREATE TABLE foreign_app_data (value TEXT)")
     before = path.read_bytes()
-
     with pytest.raises(DatabaseError, match="different application"):
         initialize_database(path)
-
     assert path.read_bytes() == before
 
 
@@ -134,3 +129,50 @@ def test_connection_context_rolls_back_on_exception(tmp_path):
             raise RuntimeError("abort transaction")
     with database_connection(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM profiles").fetchone()[0] == 0
+
+
+def _create_v1_database(path):
+    """Build the previous SecureAir schema through the original initializer SQL."""
+    statements = (
+        "CREATE TABLE profiles (profile_id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, consent_at TEXT NOT NULL, feature_schema TEXT NOT NULL)",
+        "CREATE TABLE enrollment_samples (sample_id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL, session_id TEXT NOT NULL, sample_number INTEGER NOT NULL CHECK (sample_number BETWEEN 1 AND 20), features_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (profile_id, session_id, sample_number), FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE CASCADE)",
+        "CREATE INDEX idx_enrollment_samples_profile_session ON enrollment_samples(profile_id, session_id)",
+        "CREATE TABLE security_events (event_id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, event_type TEXT NOT NULL, outcome TEXT NOT NULL, profile_id TEXT, details_json TEXT NOT NULL, FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE SET NULL)",
+        "CREATE INDEX idx_security_events_occurred_at ON security_events(occurred_at)",
+    )
+    with sqlite3.connect(path) as connection:
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        connection.execute("PRAGMA user_version = 1")
+
+
+def test_migrates_verified_v1_secureair_database_preserving_rows(tmp_path):
+    path = db_path(tmp_path)
+    _create_v1_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "created", "consent", "v1")
+        )
+
+    assert initialize_database(path) == path
+    with database_connection(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("SELECT profile_id FROM profiles").fetchone()[0] == "alice"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='protected_sites'"
+        ).fetchone()[0] == 1
+    assert initialize_database(path) == path
+
+
+def test_failed_or_unverified_migration_rolls_back_without_changes(tmp_path):
+    path = db_path(tmp_path)
+    _create_v1_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE security_events")
+        connection.execute("CREATE TABLE other_data (id INTEGER)")
+        connection.execute("PRAGMA user_version = 1")
+    before = path.read_bytes()
+    with pytest.raises(DatabaseError, match="incomplete or unexpected"):
+        initialize_database(path)
+    assert path.read_bytes() == before
