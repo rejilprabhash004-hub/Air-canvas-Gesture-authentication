@@ -13,6 +13,8 @@ from backend.database import (
     database_path,
     initialize_database,
 )
+from backend.security_event_chain import verify_security_event_chain
+from backend.security_events import SecurityEventLogger
 
 
 def db_path(tmp_path):
@@ -32,21 +34,21 @@ def test_database_path_uses_configured_data_directory(tmp_path):
     assert database_path(settings) == tmp_path / "private-data" / DATABASE_FILENAME
 
 
-def test_initialize_creates_v2_schema_and_is_idempotent(tmp_path):
+def test_initialize_creates_v3_chain_schema_and_is_idempotent(tmp_path):
     path = db_path(tmp_path)
     assert initialize_database(path) == path
     assert initialize_database(path) == path
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert {"profiles", "enrollment_samples", "security_events", "protected_sites"} <= tables
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(security_events)")}
+        assert {"previous_hash", "event_hash"} <= columns
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
 
 
@@ -123,8 +125,7 @@ def test_connection_context_rolls_back_on_exception(tmp_path):
     with pytest.raises(RuntimeError):
         with database_connection(path) as connection:
             connection.execute(
-                "INSERT INTO profiles VALUES (?, ?, ?, ?)",
-                ("alice", "now", "now", "v1"),
+                "INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "now", "now", "v1")
             )
             raise RuntimeError("abort transaction")
     with database_connection(path) as connection:
@@ -132,7 +133,7 @@ def test_connection_context_rolls_back_on_exception(tmp_path):
 
 
 def _create_v1_database(path):
-    """Build the previous SecureAir schema through the original initializer SQL."""
+    """Build the original SecureAir v1 database fixture."""
     statements = (
         "CREATE TABLE profiles (profile_id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, consent_at TEXT NOT NULL, feature_schema TEXT NOT NULL)",
         "CREATE TABLE enrollment_samples (sample_id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL, session_id TEXT NOT NULL, sample_number INTEGER NOT NULL CHECK (sample_number BETWEEN 1 AND 20), features_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (profile_id, session_id, sample_number), FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE CASCADE)",
@@ -147,25 +148,75 @@ def _create_v1_database(path):
         connection.execute("PRAGMA user_version = 1")
 
 
-def test_migrates_verified_v1_secureair_database_preserving_rows(tmp_path):
+def _downgrade_empty_v3_to_v2(path):
+    """Create the v2 event-table shape for an isolated migration test."""
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE protected_sites")
+        connection.execute("ALTER TABLE security_events RENAME TO events_v3")
+        connection.execute(
+            "CREATE TABLE security_events (event_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "occurred_at TEXT NOT NULL, event_type TEXT NOT NULL, outcome TEXT NOT NULL, "
+            "profile_id TEXT, details_json TEXT NOT NULL, "
+            "FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE SET NULL)"
+        )
+        connection.execute("DROP TABLE events_v3")
+        connection.execute("CREATE INDEX idx_security_events_occurred_at ON security_events(occurred_at)")
+        connection.execute(
+            "CREATE TABLE protected_sites (domain TEXT PRIMARY KEY NOT NULL, "
+            "enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+
+def test_migrates_verified_v1_database_to_v3_and_preserves_rows(tmp_path):
     path = db_path(tmp_path)
     _create_v1_database(path)
     with sqlite3.connect(path) as connection:
-        connection.execute(
-            "INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "created", "consent", "v1")
-        )
-
+        connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "created", "consent", "v1"))
     assert initialize_database(path) == path
     with database_connection(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT profile_id FROM profiles").fetchone()[0] == "alice"
-        assert connection.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='protected_sites'"
-        ).fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM protected_sites").fetchone()[0] == 0
     assert initialize_database(path) == path
 
 
-def test_failed_or_unverified_migration_rolls_back_without_changes(tmp_path):
+def test_v2_migration_backfills_valid_chain_and_preserves_event_rows(tmp_path):
+    path = initialize_database(db_path(tmp_path))
+    _downgrade_empty_v3_to_v2(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("user_1", "created", "consent", "v1"))
+        connection.execute(
+            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) "
+            "VALUES (1,?,?,?,?,?)",
+            ("2026-02-03T04:05:06+00:00", "auth_attempt", "denied", "user_1", '{"reason_code":"challenge_failed"}'),
+        )
+    initialize_database(path)
+    assert verify_security_event_chain(str(path)).valid
+    with database_connection(path) as connection:
+        row = connection.execute("SELECT event_id, previous_hash, event_hash FROM security_events").fetchone()
+        assert row["event_id"] == 1
+        assert row["previous_hash"] == "0" * 64
+        assert len(row["event_hash"]) == 64
+
+
+def test_v2_migration_rolls_back_when_existing_event_is_invalid(tmp_path):
+    path = initialize_database(db_path(tmp_path))
+    _downgrade_empty_v3_to_v2(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) "
+            "VALUES (1,?,?,?,?,?)",
+            ("now", "auth_attempt", "failure", None, '{"token":"must-not-migrate"}'),
+        )
+    before = path.read_bytes()
+    with pytest.raises(DatabaseError, match="cannot be safely migrated"):
+        initialize_database(path)
+    assert path.read_bytes() == before
+
+
+def test_failed_or_unverified_v1_migration_rolls_back_without_changes(tmp_path):
     path = db_path(tmp_path)
     _create_v1_database(path)
     with sqlite3.connect(path) as connection:
