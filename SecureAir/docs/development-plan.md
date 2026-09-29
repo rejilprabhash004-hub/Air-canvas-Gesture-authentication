@@ -1,23 +1,23 @@
 # Staged development plan
 
-SecureAir is developed separately from the legacy Flask application. Run automated checks before release; a passing unit test does not prove camera accuracy, identity assurance, or production security. The legacy test runner deletes its database; run it only against a disposable clone.
+SecureAir is developed separately from the legacy Flask application. Run automated checks before release; passing unit tests do not prove camera accuracy, identity assurance, or production security. The legacy test runner deletes its database; run it only against a disposable clone.
 
 | Stage | Deliverable | Gate before release |
 |---|---|---|
 | 1 | Isolated scaffold, validated configuration, architecture/threat docs, tests | Scaffold tests/lint; legacy files unchanged |
 | 2 | Local one-hand MediaPipe capture and landmarks | Synthetic tests; manual camera check; no frame persistence |
-| 3 | Geometric classifier for five static gestures | Tests for known, ambiguous, absent, multiple hands |
+| 3 | Geometric classifier for five static gestures | Known, ambiguous, absent, multiple-hand tests |
 | 4 | Gesture sequence state machine | Correct/wrong/repetition/timeout tests |
 | 5 | Consent-based enrollment of 10–20 normalized samples; local deletion | Consent, validation, path safety, no-overwrite, deletion tests; disclose plaintext storage |
-| 6 | Palm-normalized motion summaries | Timing/order, normalization, movement-rate, malformed and out-of-frame tests |
-| 7 | Random Forest/SVM evaluator with session-disjoint holdout | Pipeline tests; real performance requires labeled multi-session data and measured results |
-| 8 | User-bound expiring single-use challenges | Binding, unpredictability, expiry, wrong-response consumption, replay, invalid input, purge tests |
-| 9 | Transparent combined decision policy | Fail-closed behavior, threshold boundaries, invalid signals, structured reasons; score source explicit |
+| 6 | Palm-normalized motion summaries | Timing/order, normalization, malformed and out-of-frame tests |
+| 7 | Random Forest/SVM evaluator with session-disjoint holdout | Pipeline tests; performance claims need labeled multi-session data and measurements |
+| 8 | User-bound expiring single-use challenges | Binding, unpredictability, expiry, replay, wrong-response consumption, invalid-input tests |
+| 9 | Transparent combined decision policy | Fail-closed behavior, threshold boundary, invalid-signal, reason tests; score source explicit |
 | 10 | Loopback FastAPI service with bearer protection | API tests; reject non-loopback binds/clients; document trusted-input/model limitations |
-| 11 | Separate SecureAir SQLite schema | Schema, foreign key, transaction, and legacy database non-modification tests |
-| 12 | Privacy-conscious security event logger | Allowlist, redaction, database failure, and privacy tests; do not log secrets or biometrics |
-| 13 | Explicit protected-site settings | Host normalization, exact matching, add/remove/enable/disable, v1-to-v2 migration and legacy DB isolation tests |
-| 14 | Minimal Manifest V3 extension | Explicit domains only; no credential/page-content access |
+| 11 | Separate SecureAir SQLite schema | Schema, foreign-key, transaction, migration, legacy DB isolation tests |
+| 12 | Privacy-conscious security event logger | Allowlist, redaction, database failure, privacy tests; no secrets/biometrics in logs |
+| 13 | Explicit protected-site settings | Host normalization, exact matching, CRUD, v1-to-v2 migration, legacy DB isolation tests |
+| 14 | Minimal Manifest V3 status extension | Explicit hosts only; least privilege; no background browsing, credentials, page-content access, or remote calls |
 | 15 | Controlled demo portal | Server-side authorization tests |
 | 16 | End-to-end integration | Integration tests and manual demonstration |
 | 17 | Local activity dashboard | Query/filter/privacy tests |
@@ -32,4 +32,4 @@ SecureAir is developed separately from the legacy Flask application. Run automat
 
 ## Current limitations
 
-The existing model evaluator predicts gesture classes; no real labeled biometric dataset is included, and user-identity confidence is not computed. The API accepts caller-supplied, forgeable gesture observations and match scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash chained. SQLite feature data is not encrypted. Protected-site settings are exact-hostname preferences only; no browser monitoring or blocking is implemented. The database initializes to schema v2 and migrates only verified SecureAir v1 data transactionally; unmarked/foreign databases and the legacy Flask database are left untouched. The demo must remain local and educational until later integration and security-review stages pass.
+The gesture model classifies gestures; there is no real labeled biometric dataset or validated user-identity confidence model. The API accepts caller-supplied, forgeable observations/scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash-chained. SQLite feature data is not encrypted. Protected-site settings are exact-host preferences only. The Stage 14 extension stores a separate local list and shows status only after an explicit toolbar click; it does not monitor or block browsing and does not authenticate. No secure extension-to-service handoff is implemented. The prototype must remain local and educational until integration and security-review stages pass.
