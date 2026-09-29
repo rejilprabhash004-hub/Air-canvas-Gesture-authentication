@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "SecureAir Explicit Site Status",
+  "version": "0.1.0",
+  "description": "Shows local protection status only for sites you explicitly configure.",
+  "permissions": ["activeTab", "storage"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Check SecureAir site status",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}
