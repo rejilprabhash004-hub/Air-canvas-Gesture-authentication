@@ -11,6 +11,7 @@ from backend.challenges import (
     ChallengeNotFoundError,
     ChallengeUserMismatchError,
 )
+from gesture.gesture_recognition import GESTURES
 
 
 class FakeClock:
@@ -59,13 +60,11 @@ def test_issued_challenge_is_bound_and_correct_sequence_consumes_once():
 def test_wrong_sequence_is_consumed_and_cannot_be_retried():
     challenges = manager(length=2)
     challenge = challenges.issue("alice")
-    wrong = ("NOT_A_GESTURE",)
-    # Unsupported labels are rejected before any consumption attempt.
     with pytest.raises(ChallengeError, match="unsupported"):
-        challenges.consume(challenge.challenge_id, "alice", wrong)
-    valid_but_wrong = ("FIST", "FIST")
-    if valid_but_wrong == challenge.gestures:
-        valid_but_wrong = ("OPEN_PALM", "OPEN_PALM")
+        challenges.consume(challenge.challenge_id, "alice", ("NOT_A_GESTURE",))
+
+    different_first = next(gesture for gesture in GESTURES if gesture != challenge.gestures[0])
+    valid_but_wrong = (different_first, different_first)
     assert challenges.consume(challenge.challenge_id, "alice", valid_but_wrong) is False
     with pytest.raises(ChallengeAlreadyUsedError):
         challenges.consume(challenge.challenge_id, "alice", challenge.gestures)
