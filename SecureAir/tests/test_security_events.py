@@ -44,14 +44,12 @@ def test_writes_minimized_event_and_valid_chain_link(tmp_path):
     with database_connection(path) as connection:
         row = connection.execute("SELECT * FROM security_events WHERE event_id = ?", (event_id,)).fetchone()
     assert row["occurred_at"] == "2026-02-03T04:05:06+00:00"
-    assert row["event_type"] == "auth_attempt"
-    assert row["outcome"] == "denied"
+    assert row["event_type"] == "auth_attempt" and row["outcome"] == "denied"
     assert row["profile_id"] == "user_1"
     assert json.loads(row["details_json"]) == {
         "component": "decision", "http_status": 401, "reason_code": "challenge_failed"
     }
-    assert row["previous_hash"] == GENESIS_HASH
-    assert len(row["event_hash"]) == 64
+    assert row["previous_hash"] == GENESIS_HASH and len(row["event_hash"]) == 64
     assert verify_security_event_chain(str(path)).valid
 
 
@@ -78,21 +76,30 @@ def test_rejects_invalid_event_without_partial_insert(tmp_path):
 def test_detects_tampered_event_and_broken_chain_link(tmp_path):
     path, logger = setup_logger(tmp_path)
     first = logger.record("auth_attempt", "failure")
-    second = logger.record("challenge_issue", "success")
+    logger.record("challenge_issue", "success")
     with database_connection(path) as connection:
-        connection.execute("UPDATE security_events SET outcome = 'denied' WHERE event_id = ?", (first,))
+        connection.execute("UPDATE security_events SET outcome='denied' WHERE event_id=?", (first,))
     result = verify_security_event_chain(str(path))
-    assert not result.valid
-    assert result.failed_event_id == first
+    assert not result.valid and result.failed_event_id == first
 
     path2, logger2 = setup_logger(tmp_path / "other")
     logger2.record("auth_attempt", "failure")
     second2 = logger2.record("challenge_issue", "success")
     with database_connection(path2) as connection:
-        connection.execute("UPDATE security_events SET previous_hash = ? WHERE event_id = ?", ("f" * 64, second2))
+        connection.execute("UPDATE security_events SET previous_hash=? WHERE event_id=?", ("f" * 64, second2))
     result = verify_security_event_chain(str(path2))
-    assert not result.valid
-    assert result.failed_event_id == second2
+    assert not result.valid and result.failed_event_id == second2
+
+
+def test_writer_refuses_to_extend_tampered_chain(tmp_path):
+    path, logger = setup_logger(tmp_path)
+    logger.record("auth_attempt", "failure")
+    with database_connection(path) as connection:
+        connection.execute("UPDATE security_events SET outcome='denied' WHERE event_id=1")
+    with pytest.raises(SecurityEventError, match="history is invalid"):
+        logger.record("challenge_issue", "success")
+    with database_connection(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM security_events").fetchone()[0] == 1
 
 
 def test_profile_deletion_rechains_nullified_event_reference_atomically(tmp_path):
@@ -102,7 +109,7 @@ def test_profile_deletion_rechains_nullified_event_reference_atomically(tmp_path
     assert verify_security_event_chain(str(path)).valid
     assert delete_profile_and_rechain(str(path), "user_1") is True
     with database_connection(path) as connection:
-        row = connection.execute("SELECT profile_id FROM security_events WHERE event_id = ?", (event_id,)).fetchone()
+        row = connection.execute("SELECT profile_id FROM security_events WHERE event_id=?", (event_id,)).fetchone()
         assert row["profile_id"] is None
     assert verify_security_event_chain(str(path)).valid
     assert delete_profile_and_rechain(str(path), "user_1") is False
@@ -113,7 +120,7 @@ def test_profile_deletion_rolls_back_if_history_cannot_be_rechained(tmp_path):
     add_profile(path)
     logger.record("profile_enroll", "success", profile_id="user_1")
     with database_connection(path) as connection:
-        connection.execute("UPDATE security_events SET details_json = '{\"secret\":true}'")
+        connection.execute("UPDATE security_events SET details_json='{""secret"":true}'")
     with pytest.raises(SecurityEventChainError):
         delete_profile_and_rechain(str(path), "user_1")
     with database_connection(path) as connection:
