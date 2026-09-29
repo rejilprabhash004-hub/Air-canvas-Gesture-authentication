@@ -16,7 +16,7 @@ SecureAir is developed separately from the legacy Flask application. Run automat
 | 10 | Loopback FastAPI service with bearer protection | API tests; reject non-loopback binds/clients; document trusted-input/model limitations |
 | 11 | Separate SecureAir SQLite schema | Schema, foreign key, transaction, and legacy database non-modification tests |
 | 12 | Privacy-conscious security event logger | Allowlist, redaction, database failure, and privacy tests; do not log secrets or biometrics |
-| 13 | Explicit protected-site settings | Add/remove/enable/disable tests |
+| 13 | Explicit protected-site settings | Host normalization, exact matching, add/remove/enable/disable, schema migration, and legacy DB isolation tests |
 | 14 | Minimal Manifest V3 extension | Explicit domains only; no credential/page-content access |
 | 15 | Controlled demo portal | Server-side authorization tests |
 | 16 | End-to-end integration | Integration tests and manual demonstration |
@@ -32,4 +32,4 @@ SecureAir is developed separately from the legacy Flask application. Run automat
 
 ## Current limitations
 
-The existing model evaluator predicts gesture classes; no real labeled biometric dataset is included, and user-identity confidence is not computed. The API accepts caller-supplied, forgeable gesture observations and match scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash chained. SQLite feature data is not encrypted. The demo must remain local and educational until the later integration and security-review stages pass.
+The existing model evaluator predicts gesture classes; no real labeled biometric dataset is included, and user-identity confidence is not computed. The API accepts caller-supplied, forgeable gesture observations and match scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash chained. SQLite feature data is not encrypted. Protected-site settings are exact-hostname preferences only; no browser monitoring or blocking is implemented. The schema migrates only verified SecureAir v1 data to v2, leaving unmarked/foreign databases and the legacy Flask database untouched. The demo must remain local and educational until later integration and security-review stages pass.
