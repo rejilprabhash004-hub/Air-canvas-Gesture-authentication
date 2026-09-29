@@ -6,9 +6,8 @@ tests exercise pipeline behavior only; their scores are not model evidence.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-import math
-from typing import Any, Hashable
+from collections.abc import Hashable, Sequence
+from typing import Any
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -53,10 +52,14 @@ def compare_models(
     if any(not isinstance(label, str) or not label.strip() for label in labels):
         raise ModelEvaluationError("labels must be non-empty strings.")
     try:
-        if any(session_id is None or not isinstance(session_id, Hashable) for session_id in session_ids):
-            raise ModelEvaluationError("session_ids must be non-null hashable values.")
+        valid_groups = all(
+            session_id is not None and isinstance(session_id, Hashable)
+            for session_id in session_ids
+        )
     except TypeError as exc:
         raise ModelEvaluationError("session_ids must be non-null hashable values.") from exc
+    if not valid_groups:
+        raise ModelEvaluationError("session_ids must be non-null hashable values.")
     if len(set(labels)) < 2:
         raise ModelEvaluationError("at least two gesture classes are required.")
     if not isinstance(test_size, (int, float)) or isinstance(test_size, bool) or not 0 < test_size < 1:
@@ -65,7 +68,7 @@ def compare_models(
         raise ModelEvaluationError("random_state must be an integer.")
 
     target = np.asarray(labels, dtype=str)
-    groups = np.asarray([str(value) for value in session_ids], dtype=str)
+    groups = np.asarray(session_ids, dtype=object)
     class_names = sorted(set(labels))
     selected_split = None
     splitter = GroupShuffleSplit(n_splits=50, test_size=float(test_size), random_state=random_state)
@@ -117,8 +120,8 @@ def compare_models(
                 "class_labels": class_names,
                 "train_sample_count": int(len(train_indices)),
                 "test_sample_count": int(len(test_indices)),
-                "train_session_ids": sorted(set(groups[train_indices].tolist())),
-                "test_session_ids": sorted(set(groups[test_indices].tolist())),
+                "train_session_ids": sorted(map(repr, set(groups[train_indices].tolist()))),
+                "test_session_ids": sorted(map(repr, set(groups[test_indices].tolist()))),
             },
         }
     return results
