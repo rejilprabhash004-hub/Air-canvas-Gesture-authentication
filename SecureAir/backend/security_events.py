@@ -13,37 +13,25 @@ from pathlib import Path
 from typing import Callable
 
 from backend.database import database_connection
-from backend.security_event_chain import GENESIS_HASH, hash_chained_event
-from backend.security_event_hashes import SecurityEventHashError
+from backend.security_event_chain import (
+    GENESIS_HASH,
+    SecurityEventChainError,
+    hash_chained_event,
+    verify_event_connection,
+)
 
 _EVENT_TYPES = frozenset({
-    "auth_attempt",
-    "challenge_issue",
-    "challenge_consume",
-    "profile_enroll",
-    "profile_delete",
-    "service_auth_failure",
+    "auth_attempt", "challenge_issue", "challenge_consume", "profile_enroll",
+    "profile_delete", "service_auth_failure",
 })
 _OUTCOMES = frozenset({"success", "failure", "denied", "error"})
 _COMPONENTS = frozenset({"api", "camera", "challenge", "enrollment", "decision", "storage"})
 _REASON_CODES = frozenset({
-    "all_required_signals_passed",
-    "behavioral_match_below_threshold",
-    "challenge_failed",
-    "challenge_expired",
-    "challenge_already_used",
-    "challenge_profile_mismatch",
-    "gesture_sequence_failed",
-    "gesture_sequence_timeout",
-    "invalid_behavioral_match_score",
-    "invalid_challenge_result",
-    "invalid_sequence_status",
-    "invalid_threshold",
-    "invalid_user",
-    "lockout_active",
-    "rate_limited",
-    "storage_error",
-    "unknown",
+    "all_required_signals_passed", "behavioral_match_below_threshold", "challenge_failed",
+    "challenge_expired", "challenge_already_used", "challenge_profile_mismatch",
+    "gesture_sequence_failed", "gesture_sequence_timeout", "invalid_behavioral_match_score",
+    "invalid_challenge_result", "invalid_sequence_status", "invalid_threshold", "invalid_user",
+    "lockout_active", "rate_limited", "storage_error", "unknown",
 })
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -56,12 +44,7 @@ class SecurityEventError(ValueError):
 class SecurityEventLogger:
     """Write minimized, allowlisted and hash-chained events to an initialized DB."""
 
-    def __init__(
-        self,
-        db_path: str | Path,
-        *,
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-    ) -> None:
+    def __init__(self, db_path: str | Path, *, clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self._db_path = db_path
         self._clock = clock
 
@@ -75,12 +58,7 @@ class SecurityEventLogger:
         http_status: int | None = None,
         component: str | None = None,
     ) -> int:
-        """Persist one event and its chain link atomically; return its row ID.
-
-        ``profile_id`` should be a local pseudonymous identifier, not a name or
-        email. Callers must not place secrets, tokens, frame data, landmarks,
-        gesture sequences, or user-submitted strings in event fields.
-        """
+        """Validate, verify, hash and persist one event atomically."""
         if not isinstance(event_type, str) or event_type not in _EVENT_TYPES:
             raise SecurityEventError("event_type is not allowlisted.")
         if not isinstance(outcome, str) or outcome not in _OUTCOMES:
@@ -108,20 +86,18 @@ class SecurityEventLogger:
             raise SecurityEventError("clock must return a timezone-aware datetime.")
         occurred_at = occurred_at.astimezone(timezone.utc).isoformat()
         details = {
-            key: value
-            for key, value in (
-                ("reason_code", reason_code),
-                ("http_status", http_status),
-                ("component", component),
-            )
-            if value is not None
+            key: value for key, value in (
+                ("reason_code", reason_code), ("http_status", http_status), ("component", component)
+            ) if value is not None
         }
         details_json = json.dumps(details, sort_keys=True, separators=(",", ":"))
 
         try:
             with database_connection(self._db_path) as connection:
-                # Serialize writers before deriving the next ID and predecessor.
                 connection.execute("BEGIN IMMEDIATE")
+                verification = verify_event_connection(connection)
+                if not verification.valid:
+                    raise SecurityEventError("security event history is invalid; refusing to append.")
                 tail = connection.execute(
                     "SELECT event_id, event_hash FROM security_events ORDER BY event_id DESC LIMIT 1"
                 ).fetchone()
@@ -130,22 +106,17 @@ class SecurityEventLogger:
                 if not isinstance(previous_hash, str) or not _HASH.fullmatch(previous_hash):
                     raise SecurityEventError("security event chain tail is invalid.")
                 event = {
-                    "event_id": event_id,
-                    "occurred_at": occurred_at,
-                    "event_type": event_type,
-                    "outcome": outcome,
-                    "profile_id": profile_id,
-                    "details_json": details_json,
+                    "event_id": event_id, "occurred_at": occurred_at, "event_type": event_type,
+                    "outcome": outcome, "profile_id": profile_id, "details_json": details_json,
                 }
                 try:
                     event_hash = hash_chained_event(event, previous_hash)
-                except (ValueError, SecurityEventHashError) as exc:
+                except (SecurityEventChainError, ValueError) as exc:
                     raise SecurityEventError("security event could not be hashed.") from exc
                 connection.execute(
                     """INSERT INTO security_events
                        (event_id, occurred_at, event_type, outcome, profile_id, details_json,
-                        previous_hash, event_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        previous_hash, event_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (event_id, occurred_at, event_type, outcome, profile_id, details_json,
                      previous_hash, event_hash),
                 )
