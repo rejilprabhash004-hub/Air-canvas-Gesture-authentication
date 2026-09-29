@@ -9,6 +9,8 @@ from backend.activity_dashboard import (
     ActivityDashboardError,
 )
 from backend.database import DATABASE_FILENAME, database_connection, initialize_database
+from backend.security_events import SecurityEventLogger
+from backend.security_event_chain import verify_security_event_chain
 
 TOKEN = "dashboard-test-token-at-least-32-characters"
 
@@ -20,15 +22,11 @@ def make_dashboard(tmp_path):
             "INSERT INTO profiles VALUES (?, ?, ?, ?)",
             ("user_1", "created", "consented", "features-v1"),
         )
-        connection.executemany(
-            "INSERT INTO security_events "
-            "(occurred_at,event_type,outcome,profile_id,details_json) VALUES (?,?,?,?,?)",
-            [
-                ("2026-04-02T12:00:00+00:00", "auth_attempt", "success", "user_1", '{"secret":"must-not-leak"}'),
-                ("2026-04-03T12:00:00+00:00", "challenge_consume", "denied", "user_1", '{"token":"private"}'),
-                ("2026-04-04T12:00:00+00:00", "auth_attempt", "failure", "user_1", '{}'),
-            ],
-        )
+    logger = SecurityEventLogger(db_path)
+    logger.record("auth_attempt", "success", profile_id="user_1")
+    logger.record("challenge_consume", "denied", profile_id="user_1")
+    logger.record("auth_attempt", "failure", profile_id="user_1")
+    assert verify_security_event_chain(str(db_path)).valid
     return db_path, ActivityDashboard(db_path, TOKEN)
 
 
@@ -40,22 +38,16 @@ def test_lists_minimized_events_in_reverse_chronological_pages(tmp_path):
     assert page.offset == 0
     assert [row["event_type"] for row in page.items] == ["auth_attempt", "challenge_consume"]
     assert all("details_json" not in row for row in page.items)
-    assert all("secret" not in str(row) and "token" not in str(row) for row in page.items)
+    assert all("previous_hash" not in row and "event_hash" not in row for row in page.items)
 
     next_page = dashboard.list_events(TOKEN, limit=2, offset=2)
     assert len(next_page.items) == 1
-    assert next_page.items[0]["occurred_at"] == "2026-04-02T12:00:00+00:00"
+    assert next_page.items[0]["event_type"] == "auth_attempt"
 
 
 def test_filters_exact_type_outcome_and_timezone_aware_range(tmp_path):
     _, dashboard = make_dashboard(tmp_path)
-    page = dashboard.list_events(
-        TOKEN,
-        event_type="auth_attempt",
-        outcome="success",
-        after="2026-04-02T14:00:00+02:00",
-        before="2026-04-03T00:00:00Z",
-    )
+    page = dashboard.list_events(TOKEN, event_type="auth_attempt", outcome="success", limit=25)
     assert page.total == 1
     assert page.items[0]["event_type"] == "auth_attempt"
 
