@@ -1,6 +1,6 @@
 # SecureAir
 
-**Stage 18: explicit-domain, extension-local activity events.** SecureAir remains an educational research prototype, not an authentication system.
+**Stage 19: canonical security-event hashing helper.** SecureAir remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
@@ -8,19 +8,23 @@
 - Consent-based enrollment and gesture-classification evaluation. No labeled biometric dataset or validated identity-confidence model is included; no accuracy claim is made.
 - User-bound, expiring, single-use challenges; fail-closed decisions; and a loopback FastAPI API. Gesture observations and behavioral scores remain caller-supplied and forgeable.
 - Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted; backend events are not yet hash-chained.
-- A minimal Manifest V3 status extension and loopback demo portal. The extension does not authenticate, block access, or monitor browsing in the background. Demo signals remain forgeable.
+- A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor in the background.
 - `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries; raw event details are excluded. This is a library module, not an HTTP dashboard.
-- Extension-local event history for an explicit toolbar-popup check of an exact hostname the user has configured and enabled.
+- `backend/security_event_hashes.py`: deterministic canonical JSON and SHA-256 digest helpers for database security-event rows. Hashing is a pure computation only; hashes are not stored, and the database schema is unchanged.
+
+## Canonical event hash helper
+
+`canonical_event_bytes(event_row)` expects exactly the six columns of a `security_events` row: `event_id`, `occurred_at`, `event_type`, `outcome`, `profile_id`, and `details_json`. It validates the allowlisted event fields and details, parses and canonicalizes `details_json` independent of object-key order and whitespace, and returns canonical UTF-8 JSON bytes. `hash_security_event(event_row)` returns those bytes' lowercase SHA-256 digest.
+
+This helper does not prove authenticity by itself: a digest recomputed over altered data will also change. The helper does not persist hashes, detect database edits, or provide a chain. Those persistence/verification stages are separate. Existing database rows and schema need no migration for this helper.
 
 ## Extension-local event history
 
-When the extension popup is opened for an enabled exact-host site, the extension stores a local event containing only a timestamp, hostname, and fixed status label. It does not record URL paths, query strings, page content, or visits to unconfigured/disabled sites. No background tab or navigation listeners, host permissions, network calls, or API credentials are used. The options page displays the recent events and lets you clear them. The list is capped at 200 events, remains in extension-local storage, is not encrypted, and is not sent to the Python dashboard.
-
-This records an explicit popup status check, **not a general visit history**. Adding or enabling a site means popup checks for that site will be recorded. Remove or disable the site to stop recording checks; use **Clear event history** to erase saved events.
+For an enabled exact-host site, opening the popup stores an event containing only a timestamp, hostname, and fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. There are no background tab/navigation listeners, host permissions, network calls, or API credentials. Options lets you view and clear the latest 200 events. This local unencrypted history is not sent to Python SQLite and is not a general browsing history.
 
 ## Read-only Python activity queries
 
-The backend query module remains separate from extension-local events; there is no network dashboard endpoint. Initialize the dedicated SecureAir database and supply a private token of at least 32 characters from application configuration. Do not commit or put the token in browser code.
+The backend query module remains separate from extension-local events; there is no network dashboard endpoint. Initialize the dedicated SecureAir database and provide a private token of at least 32 characters. Do not commit or put the token in browser code.
 
 ```python
 import os
@@ -32,19 +36,10 @@ settings = load_settings()
 db_path = initialize_database(database_path(settings))
 access_token = os.environ["SECUREAIR_DASHBOARD_TOKEN"]
 dashboard = ActivityDashboard(db_path, access_token)
-page = dashboard.list_events(
-    access_token,
-    event_type="auth_attempt",
-    outcome="denied",
-    limit=25,
-    offset=0,
-)
+page = dashboard.list_events(access_token, event_type="auth_attempt", outcome="denied")
 for event in page.items:
     print(event)
-print(f"{page.total} matching events")
 ```
-
-Optional `after` and `before` filters accept timezone-aware ISO-8601 timestamps. Event type and outcome use allowlisted exact matches; page size is 1–100. Queries open SQLite read-only and return only event ID, timestamp, type, outcome, and pseudonymous profile ID, never `details_json`.
 
 ## Run the integrated local demo
 
@@ -71,11 +66,11 @@ Visit `http://127.0.0.1:8765/`. Portal requests and consumes challenges from the
 
 ## Privacy and validation
 
-The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, and extension event history are local and unencrypted; protect the data directory and browser profile. The extension's site list and event history are separate from Python SQLite.
+The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, and extension event history are local and unencrypted. The extension list and history are separate from Python SQLite.
 
 ```powershell
 python -m pytest
 ruff check .
 ```
 
-Tests and lint have not been run in this environment. Obtain consent before camera use. Never commit secrets, profiles, or databases.
+Tests and lint have not been run in this environment. Never commit secrets, profiles, or databases.
