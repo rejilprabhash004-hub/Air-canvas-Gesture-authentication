@@ -1,8 +1,8 @@
 """Read-only, bearer-protected queries for minimized SecureAir activity events.
 
 The reader opens only the dedicated SecureAir database in SQLite read-only mode.
-It returns allowlisted event columns and deliberately excludes event details
-and chain hashes. This module does not monitor browsing or collect activity.
+It verifies the event chain before returning allowlisted columns and excludes
+event details and chain hashes. It does not monitor browsing or collect activity.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import sqlite3
 from typing import Any
 
 from backend.database import APPLICATION_ID, DATABASE_FILENAME, SCHEMA_VERSION
+from backend.security_event_chain import verify_event_connection
 
 _EVENT_TYPES = frozenset({
     "auth_attempt", "challenge_issue", "challenge_consume", "profile_enroll",
@@ -45,9 +46,8 @@ class ActivityPage:
 class ActivityDashboard:
     """Read-only query service for an initialized SecureAir schema-v3 database.
 
-    The local access token must be supplied for each query and is compared in
-    constant time. The database is opened with SQLite ``mode=ro`` and
-    ``query_only``; malformed or foreign databases are rejected, never migrated.
+    The token is compared in constant time. Queries run read-only, validate the
+    hash chain in the same SQLite snapshot, and reject malformed or foreign DBs.
     """
     def __init__(self, db_path: str | Path, access_token: str) -> None:
         self._path = Path(db_path).expanduser()
@@ -104,7 +104,7 @@ class ActivityDashboard:
         limit: int = 25,
         offset: int = 0,
     ) -> ActivityPage:
-        """Return paginated minimized events; filters are exact and parameterized."""
+        """Return paginated minimized events only when the full chain is valid."""
         if (not isinstance(access_token, str)
                 or not hmac.compare_digest(access_token.encode("utf-8"), self._access_token.encode("utf-8"))):
             raise ActivityDashboardAuthorizationError("Dashboard access denied.")
@@ -143,6 +143,9 @@ class ActivityDashboard:
         connection = self._connect_read_only()
         try:
             connection.execute("BEGIN")
+            verification = verify_event_connection(connection)
+            if not verification.valid:
+                raise ActivityDashboardError("Security event history failed integrity verification.")
             total = connection.execute(
                 f"SELECT COUNT(*) FROM security_events{where}", parameters
             ).fetchone()[0]
