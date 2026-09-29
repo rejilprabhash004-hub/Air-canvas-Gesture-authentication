@@ -1,4 +1,4 @@
-"""Privacy and format tests for minimized PDF/CSV/JSON event exports."""
+"""Privacy and bound tests for minimized PDF/CSV/JSON event exports."""
 import csv
 import io
 import json
@@ -17,78 +17,42 @@ from backend.event_reports import (
 @pytest.fixture
 def events():
     return [
-        {
-            "event_id": 1,
-            "occurred_at": "2026-09-29T10:00:00+00:00",
-            "event_type": "auth_attempt",
-            "outcome": "denied",
-            "profile_id": "profile_1",
-        },
-        {
-            "event_id": 2,
-            "occurred_at": "2026-09-29T10:02:00+00:00",
-            "event_type": "challenge_issue",
-            "outcome": "success",
-            "profile_id": None,
-        },
+        {"event_id": 1, "occurred_at": "2026-09-29T10:00:00+00:00", "event_type": "auth_attempt", "outcome": "denied", "profile_id": "profile_1"},
+        {"event_id": 2, "occurred_at": "2026-09-29T10:02:00+00:00", "event_type": "challenge_issue", "outcome": "success", "profile_id": None},
     ]
 
 
 def test_json_export_is_valid_deterministic_and_minimized(events):
     output = export_events_json(events)
-    parsed = json.loads(output)
-    assert parsed == {"schema": "secureair-event-report-v1", "events": events}
+    assert json.loads(output) == {"schema": "secureair-event-report-v1", "events": events}
     assert output == export_events_json(events)
-    assert b"details_json" not in output
-    assert b"event_hash" not in output and b"previous_hash" not in output
+    assert b"details_json" not in output and b"event_hash" not in output and b"previous_hash" not in output
 
 
 def test_csv_export_has_fixed_minimized_columns_and_round_trips(events):
     output = export_events_csv(events)
     parsed = list(csv.DictReader(io.StringIO(output.decode("utf-8"))))
     assert list(parsed[0]) == ["event_id", "occurred_at", "event_type", "outcome", "profile_id"]
-    assert parsed[0]["event_type"] == "auth_attempt"
-    assert parsed[1]["profile_id"] == ""
-    assert b"details_json" not in output
-    assert b"event_hash" not in output and b"previous_hash" not in output
+    assert parsed[0]["event_type"] == "auth_attempt" and parsed[1]["profile_id"] == ""
+    assert b"details_json" not in output and b"event_hash" not in output and b"previous_hash" not in output
 
 
 def test_csv_protects_spreadsheet_formula_like_values():
-    malicious = [{
-        "event_id": 3,
-        "occurred_at": "=1+1",
-        "event_type": "auth_attempt",
-        "outcome": "failure",
-        "profile_id": "=HYPERLINK(\"https://example.invalid\")",
-    }]
+    malicious = [{"event_id": 3, "occurred_at": "=1+1", "event_type": "auth_attempt", "outcome": "failure", "profile_id": "=HYPERLINK(\"https://example.invalid\")"}]
     parsed = list(csv.DictReader(io.StringIO(export_events_csv(malicious).decode("utf-8"))))
-    assert parsed[0]["profile_id"].startswith("'=")
-    assert parsed[0]["occurred_at"].startswith("'=")
+    assert parsed[0]["profile_id"].startswith("'=") and parsed[0]["occurred_at"].startswith("'=")
 
 
 def test_pdf_has_valid_header_xref_and_minimized_report_text(events):
     output = export_events_pdf(events)
-    assert output.startswith(b"%PDF-1.4")
-    assert b"startxref" in output and b"%%EOF" in output
-    assert b"Security Event Report" in output
-    assert b"auth_attempt" in output and b"challenge_issue" in output
-    assert b"details_json" not in output
-    assert b"event_hash" not in output and b"previous_hash" not in output
+    assert output.startswith(b"%PDF-1.4") and b"startxref" in output and b"%%EOF" in output
+    assert b"Security Event Report" in output and b"auth_attempt" in output and b"challenge_issue" in output
+    assert b"details_json" not in output and b"event_hash" not in output and b"previous_hash" not in output
 
 
 def test_pdf_paginates_long_reports():
-    many = [
-        {
-            "event_id": index,
-            "occurred_at": "2026-09-29T10:00:00+00:00",
-            "event_type": "auth_attempt",
-            "outcome": "failure",
-            "profile_id": None,
-        }
-        for index in range(1, 60)
-    ]
-    output = export_events_pdf(many)
-    assert output.count(b"/Type /Page ") == 2
+    rows = [{"event_id": index, "occurred_at": "2026-09-29T10:00:00+00:00", "event_type": "auth_attempt", "outcome": "failure", "profile_id": None} for index in range(1, 60)]
+    assert export_events_pdf(rows).count(b"/Type /Page ") == 2
 
 
 def test_empty_reports_and_format_dispatch(events):
@@ -107,15 +71,25 @@ def test_empty_reports_and_format_dispatch(events):
     {"event_id": 1, "occurred_at": "now", "event_type": "password", "outcome": "failure", "profile_id": None},
 ])
 def test_refuses_invalid_or_private_report_fields(bad):
-    with pytest.raises(EventReportError):
-        export_events_json([bad])
-    with pytest.raises(EventReportError):
-        export_events_csv([bad])
-    with pytest.raises(EventReportError):
-        export_events_pdf([bad])
+    for exporter in (export_events_json, export_events_csv, export_events_pdf):
+        with pytest.raises(EventReportError):
+            exporter([bad])
 
 
-def test_rejects_report_over_size_limit():
+def test_rejects_report_over_size_limit_while_consuming_iterable():
     from backend.event_reports import _MAX_EVENTS
+    consumed = 0
+    def rows():
+        nonlocal consumed
+        for _ in range(_MAX_EVENTS + 5):
+            consumed += 1
+            yield None
     with pytest.raises(EventReportError, match="limited"):
-        export_events_json([None] * (_MAX_EVENTS + 1))
+        export_events_json(rows())
+    assert consumed == _MAX_EVENTS + 1
+
+
+def test_rejects_oversized_text_field():
+    row = {"event_id": 1, "occurred_at": "x" * 257, "event_type": "auth_attempt", "outcome": "failure", "profile_id": None}
+    with pytest.raises(EventReportError, match="character limit"):
+        export_events_json([row])
