@@ -4,7 +4,7 @@ The SecureAir database has a fixed filename and application ID. Initialization
 refuses a pre-existing unrelated SQLite database rather than altering the
 legacy project's database. The schema stores enrollment feature JSON locally;
 callers must obtain consent and protect the containing directory and backups.
-"""
+""" 
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -17,9 +17,9 @@ from backend.config import Settings
 
 DATABASE_FILENAME = "secureair.sqlite3"
 APPLICATION_ID = 0x53414952  # ASCII-ish marker: "SAIR"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-_SCHEMA_STATEMENTS = (
+_SCHEMA_V1_STATEMENTS = (
     """CREATE TABLE profiles (
         profile_id TEXT PRIMARY KEY NOT NULL,
         created_at TEXT NOT NULL,
@@ -50,8 +50,14 @@ _SCHEMA_STATEMENTS = (
     """CREATE INDEX idx_security_events_occurred_at
         ON security_events(occurred_at)""",
 )
-
-_EXPECTED_TABLES = {"profiles", "enrollment_samples", "security_events"}
+_PROTECTED_SITES_STATEMENT = """CREATE TABLE protected_sites (
+    domain TEXT PRIMARY KEY NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""
+_EXPECTED_TABLES_V1 = {"profiles", "enrollment_samples", "security_events"}
+_EXPECTED_TABLES_V2 = _EXPECTED_TABLES_V1 | {"protected_sites"}
 
 
 class DatabaseError(ValueError):
@@ -98,11 +104,12 @@ def _user_tables(connection: sqlite3.Connection) -> set[str]:
 
 
 def initialize_database(db_path: str | Path) -> Path:
-    """Create schema v1, or verify a complete already-initialized SecureAir DB.
+    """Create schema v2 or safely migrate a verified SecureAir v1 database.
 
     Existing unmarked databases, including the legacy application database,
-    are refused without changing their journal mode or contents. Schema DDL and
-    markers are committed together under an exclusive transaction.
+    are refused without changing their contents. The sole migration accepted
+    is the exact SecureAir v1 schema, upgraded transactionally with the new
+    ``protected_sites`` table. Schema DDL and markers commit together.
     """
     path = _validate_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,28 +128,38 @@ def initialize_database(db_path: str | Path) -> Path:
             raise DatabaseError("Database schema is newer than this SecureAir version.")
         if application_id == 0 and (user_version != 0 or existing_tables):
             raise DatabaseError("Unmarked existing database will not be modified.")
+
         if application_id == APPLICATION_ID:
-            if user_version != SCHEMA_VERSION:
-                raise DatabaseError("SecureAir database schema marker is invalid or unsupported.")
-            if existing_tables != _EXPECTED_TABLES:
-                raise DatabaseError("SecureAir database schema is incomplete or unexpected.")
+            if user_version == 1:
+                if existing_tables != _EXPECTED_TABLES_V1:
+                    raise DatabaseError("SecureAir v1 database schema is incomplete or unexpected.")
+                connection.execute("BEGIN EXCLUSIVE")
+                if (connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
+                        or connection.execute("PRAGMA user_version").fetchone()[0] != 1
+                        or _user_tables(connection) != _EXPECTED_TABLES_V1):
+                    raise DatabaseError("Database changed during migration; refusing modification.")
+                connection.execute(_PROTECTED_SITES_STATEMENT)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
+                if os.name == "posix":
+                    os.chmod(path, 0o600)
+                return path
+            if user_version != SCHEMA_VERSION or existing_tables != _EXPECTED_TABLES_V2:
+                raise DatabaseError("SecureAir database schema is incomplete or unsupported.")
             return path
 
-        # Serialize initialization and re-check after acquiring the lock so a
-        # competing initializer or replaced file cannot be overwritten.
+        # Serialize first-time initialization and re-check before writing.
         connection.execute("BEGIN EXCLUSIVE")
-        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
-        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        existing_tables = _user_tables(connection)
-        if application_id != 0 or user_version != 0 or existing_tables:
+        if (connection.execute("PRAGMA application_id").fetchone()[0] != 0
+                or connection.execute("PRAGMA user_version").fetchone()[0] != 0
+                or _user_tables(connection)):
             raise DatabaseError("Database changed during initialization; refusing modification.")
-
-        for statement in _SCHEMA_STATEMENTS:
+        for statement in _SCHEMA_V1_STATEMENTS:
             connection.execute(statement)
+        connection.execute(_PROTECTED_SITES_STATEMENT)
         connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
-
         if os.name == "posix":
             os.chmod(path, 0o600)
         return path
