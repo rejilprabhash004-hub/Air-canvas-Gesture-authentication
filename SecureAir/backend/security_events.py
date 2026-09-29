@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Callable
 
 from backend.database import database_connection
+from backend.security_event_chain import GENESIS_HASH, hash_chained_event
+from backend.security_event_hashes import SecurityEventHashError
 
 _EVENT_TYPES = frozenset({
     "auth_attempt",
@@ -44,6 +46,7 @@ _REASON_CODES = frozenset({
     "unknown",
 })
 _PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SecurityEventError(ValueError):
@@ -51,7 +54,7 @@ class SecurityEventError(ValueError):
 
 
 class SecurityEventLogger:
-    """Write minimized, allowlisted security events to an initialized DB."""
+    """Write minimized, allowlisted and hash-chained events to an initialized DB."""
 
     def __init__(
         self,
@@ -72,7 +75,7 @@ class SecurityEventLogger:
         http_status: int | None = None,
         component: str | None = None,
     ) -> int:
-        """Persist one event, returning its row ID; never accept free text.
+        """Persist one event and its chain link atomically; return its row ID.
 
         ``profile_id`` should be a local pseudonymous identifier, not a name or
         email. Callers must not place secrets, tokens, frame data, landmarks,
@@ -117,12 +120,37 @@ class SecurityEventLogger:
 
         try:
             with database_connection(self._db_path) as connection:
-                cursor = connection.execute(
+                # Serialize writers before deriving the next ID and predecessor.
+                connection.execute("BEGIN IMMEDIATE")
+                tail = connection.execute(
+                    "SELECT event_id, event_hash FROM security_events ORDER BY event_id DESC LIMIT 1"
+                ).fetchone()
+                event_id = 1 if tail is None else int(tail["event_id"]) + 1
+                previous_hash = GENESIS_HASH if tail is None else tail["event_hash"]
+                if not isinstance(previous_hash, str) or not _HASH.fullmatch(previous_hash):
+                    raise SecurityEventError("security event chain tail is invalid.")
+                event = {
+                    "event_id": event_id,
+                    "occurred_at": occurred_at,
+                    "event_type": event_type,
+                    "outcome": outcome,
+                    "profile_id": profile_id,
+                    "details_json": details_json,
+                }
+                try:
+                    event_hash = hash_chained_event(event, previous_hash)
+                except (ValueError, SecurityEventHashError) as exc:
+                    raise SecurityEventError("security event could not be hashed.") from exc
+                connection.execute(
                     """INSERT INTO security_events
-                       (occurred_at, event_type, outcome, profile_id, details_json)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (occurred_at, event_type, outcome, profile_id, details_json),
+                       (event_id, occurred_at, event_type, outcome, profile_id, details_json,
+                        previous_hash, event_hash)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (event_id, occurred_at, event_type, outcome, profile_id, details_json,
+                     previous_hash, event_hash),
                 )
-                return int(cursor.lastrowid)
+                return event_id
+        except SecurityEventError:
+            raise
         except sqlite3.Error as exc:
             raise SecurityEventError("security event could not be stored.") from exc
