@@ -11,7 +11,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 5 | Consent-based enrollment of 10–20 normalized samples; local deletion | Consent, sample validation, path safety, no-overwrite, deletion tests; disclose plaintext profile storage |
 | 6 | Palm-normalized motion summaries from timestamped landmarks | Timing/order, normalization, movement-rate, malformed and out-of-frame tests |
 | 7 | Random Forest/SVM evaluator with session-disjoint holdout and standard classification metrics | Pipeline behavior tests; real performance claims require labeled multi-session data and measured results |
-| 8 | User-bound expiring single-use challenges | Expiry/reuse/replay tests |
+| 8 | User-bound expiring single-use gesture challenges | Tests for profile binding, unpredictable IDs, expiry, wrong-response consumption, one-time use, invalid input, and purge behavior |
 | 9 | Transparent combined decision | Threshold and failure-reason tests |
 | 10 | Loopback FastAPI | API tests; reject remote bind/unauthorized caller |
 | 11 | Secure SQLite schema | Foreign-key/schema tests; no legacy DB changes |
@@ -30,4 +30,4 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 24 | UI improvements | Accessibility and regression checks |
 | 25 | Final docs and viva guide | Reproducible Windows install and demo |
 
-A passing unit test is not proof of camera accuracy, identity assurance, or production security.
+Challenges are currently process-local and disappear on restart. They do not establish identity or validate camera/detector provenance. A passing unit test is not proof of camera accuracy, identity assurance, or production security.
