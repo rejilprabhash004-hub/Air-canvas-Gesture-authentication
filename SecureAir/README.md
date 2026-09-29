@@ -1,22 +1,22 @@
 # SecureAir
 
-**Stage 2: local hand detection and landmark extraction.** This is still a research prototype, not a complete authentication system.
+**Stage 3: basic geometric gesture recognition.** This is still an educational research prototype, not a complete authentication system.
 
-## What Stage 2 adds
+## What is implemented
 
 - MediaPipe Hands processing through `gesture/hand_detector.py`.
-- Exactly 21 finite XYZ landmarks validated by `gesture/landmarks.py`.
-- Wrist-relative, palm-scale normalization in `gesture/landmarks.py`.
-- A camera preview utility that displays transient frames but does not save them.
-- Synthetic unit tests that require no webcam.
+- Validation and wrist-relative, palm-scale normalization of 21 XYZ landmarks in `gesture/landmarks.py`.
+- Explainable geometric classification for Open Palm, Fist, Thumbs Up, Victory, and Pointing in `gesture/gesture_recognition.py`.
+- Synthetic tests for supported poses, malformed/absent landmarks, and ambiguous poses.
+- Local camera preview through `gesture/camera_preview.py`; frames are transient and are not saved.
 
-Normalization subtracts the wrist position from all landmarks, removing image translation, then divides coordinates by the wrist-to-middle-finger MCP distance, reducing apparent hand-size variation. It also scales Z by that same 2D palm measure. This does not correct perspective, rotation, camera calibration, lighting, or all depth errors.
+The classifier checks finger joint angles and the position of fingertip landmarks relative to the wrist. For Thumbs Up, it additionally checks that the thumb tip is above the wrist in the image. These rules assume an approximately upright hand and can be affected by orientation, camera position, occlusion, and lighting. Unclear poses return no gesture instead of guessing. Handedness is accepted for a future orientation-aware improvement, but currently does not change classification.
 
-Two hands are detected so that the current one-hand mode can reject ambiguous captures rather than silently choosing a hand. Two-hand authentication is not implemented.
+This classifies pose shape only. It does not analyze movement behavior, verify a user's identity, prevent spoofing, or authenticate anyone. Classification quality has not been measured on a real camera dataset.
 
-## Windows setup
+## Windows setup and testing
 
-From the `SecureAir` directory, in PowerShell:
+From the `SecureAir` directory in PowerShell:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -29,10 +29,10 @@ ruff check .
 python -m gesture.camera_preview
 ```
 
-Allow camera access when Windows asks. Quit the preview with **Q** or **Esc**. If the camera is unavailable, close apps using it and try `python -m gesture.camera_preview --camera 1`.
+Allow local camera access. Press **Q** or **Esc** to close the preview. If it cannot open the camera, close other apps using it or try `python -m gesture.camera_preview --camera 1`.
 
-The secret is only a local environment setting; never commit it. Camera frames are processed in memory and discarded. Do not use the preview around people without their consent.
+The secret remains in the local environment; never commit it. Camera frames are processed in memory and discarded. Obtain consent before using the camera around people.
 
 ## Stage status
 
-Stage 2 implements landmark capture and normalization only. It does **not** recognize gestures, enroll users, train a model, or authenticate. Run tests before proceeding to gesture recognition.
+Stages 2 and 3 provide local landmarks and static-pose labels only. Gesture sequences, enrollment, behavioral feature extraction, ML training, and authentication have not yet been implemented.
