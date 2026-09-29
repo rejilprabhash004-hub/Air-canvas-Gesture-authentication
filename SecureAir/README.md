@@ -9,25 +9,25 @@
 - User-bound, expiring, single-use challenges; fail-closed decisions; and a loopback FastAPI API. Gesture observations and behavioral scores remain caller-supplied and forgeable.
 - Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted.
 - A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor in the background.
-- `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries; raw event details and chain hashes are excluded. This is a library module, not an HTTP dashboard.
+- `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries against schema v3; event details and chain hashes are excluded.
 - `backend/security_event_hashes.py`: canonical event encoding and SHA-256 digest helper.
-- `backend/security_event_chain.py`: schema-v3 chain verification and profile deletion/re-chaining helpers. The event logger appends new database events and their chain links in one SQLite transaction.
+- `backend/security_event_chain.py`: schema-v3 chain verification and profile deletion/re-chaining helpers. The event logger verifies prior history and appends new events and chain links atomically.
 
 ## Backend event integrity chain
 
-New SecureAir databases use schema version 3. Existing, structurally verified v1 or v2 SecureAir databases migrate transactionally; v1 first gains the protected-sites table, and existing event rows are linked in event-ID order. Invalid legacy event metadata stops the migration and rolls back, so correct malformed events before retrying. Unmarked or unrelated databases continue to be refused.
+New SecureAir databases use schema version 3. Structurally verified v1 or v2 databases migrate transactionally; v1 first gains the protected-sites table, and existing event rows are linked in event-ID order. Invalid legacy event metadata stops the migration and rolls back. Unmarked or unrelated databases continue to be refused.
 
-Each backend security event stores `previous_hash` and `event_hash`. The first predecessor is 64 zeroes. The event digest uses the Stage 19 canonical event representation; the chain digest binds that digest to the predecessor with a versioned domain separator. The logger inserts the event and chain fields atomically. `verify_security_event_chain(db_path)` checks rows in event-ID order and returns the first failing event ID without event contents. `delete_profile_and_rechain(db_path, profile_id)` verifies history before deletion, then applies the existing profile-reference nullification and re-chains atomically to respect the privacy deletion behavior.
+Each backend security event stores `previous_hash` and `event_hash`. The first predecessor is 64 zeroes. The chain digest binds the Stage 19 canonical event hash to its predecessor with a versioned separator. Before every new event is appended, the writer verifies existing rows while holding the SQLite write transaction; it refuses to extend invalid history. The read-only activity query validates the v3 schema and continues to return only minimized event metadata. Profile deletion verifies then re-chains in one transaction to respect profile-reference nullification.
 
-The chain detects accidental or uncoordinated edits when verified; it does not stop an attacker with database write access from changing events and recomputing the entire chain. There is no external trust anchor, digital signature, or remote checkpoint. Protect local database files and backups. The schema migration does not connect or alter the separate Stage 18 extension-local event history.
+The chain can reveal inconsistent edits when verified; it does not stop an attacker with write access from changing events and recomputing the full chain. There is no external trust anchor, signature, or remote checkpoint. Protect local database files and backups. Extension-local Stage 18 history is separate and untouched by this schema migration.
 
 ## Extension-local event history
 
-For an enabled exact-host site, opening the popup stores an event containing only a timestamp, hostname, and fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. There are no background tab/navigation listeners, host permissions, network calls, or API credentials. Options lets you view and clear the latest 200 events. This local unencrypted history is not sent to Python SQLite and is not a general browsing history.
+For an enabled exact-host site, opening the popup stores an event containing only a timestamp, hostname, and fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. There are no background tab/navigation listeners, host permissions, network calls, or API credentials. Options lets you view and clear the latest 200 events. This local unencrypted history is not sent to Python SQLite and is not general browsing history.
 
 ## Read-only Python activity queries
 
-The backend query module remains separate from extension-local events; there is no network dashboard endpoint. Initialize the dedicated SecureAir database and provide a private token of at least 32 characters. Do not commit or put the token in browser code.
+The backend query module is a library only; there is no HTTP dashboard endpoint. Initialize the dedicated SecureAir database and provide a private token of at least 32 characters. Do not commit or put the token in browser code.
 
 ```python
 import os
@@ -65,11 +65,11 @@ $env:SECUREAIR_SECRET_KEY = "<same generated secret>"
 python -m uvicorn demo_portal.app:app --host 127.0.0.1 --port 8765
 ```
 
-Visit `http://127.0.0.1:8765/`. Portal requests and consumes challenges from the API server-to-server. The secret is not sent to the browser. Inputs are still forgeable, so this demo must never protect real data.
+Visit `http://127.0.0.1:8765/`. Portal requests and consumes challenges from the API server-to-server. The secret is not sent to the browser. Inputs remain forgeable; never use this demo to protect real data.
 
 ## Privacy and validation
 
-The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, chain hashes, and extension event history are local and unencrypted. The extension list and history are separate from Python SQLite.
+The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, chain hashes, and extension event history are local and unencrypted. The extension list/history are separate from Python SQLite.
 
 ```powershell
 python -m pytest
