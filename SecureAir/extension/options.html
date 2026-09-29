@@ -10,10 +10,10 @@
   <main>
     <h1>Protected sites</h1>
     <p>Only sites you add here are listed. This is a local status preference, not access control.</p>
-    <p>Optional local event history records only a timestamp, exact hostname, and status when you
-      open the extension popup for an enabled site. It never records paths, page content, or
-      unconfigured sites. History stays in extension storage, is not encrypted, and is limited to
-      the latest 200 checks. It is not sent to SecureAir's Python dashboard.</p>
+    <p>For an enabled site, opening the extension popup records a local event containing only
+      the timestamp, exact hostname, and status. It never records paths, query strings, page
+      content, or unconfigured sites. The latest 200 checks are kept in extension storage;
+      history is not encrypted and is not sent to SecureAir's Python dashboard. You can clear it below.</p>
     <form id="add-form">
       <label for="display-name">Display name</label>
       <input id="display-name" name="displayName" maxlength="80" required>
