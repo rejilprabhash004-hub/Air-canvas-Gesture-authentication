@@ -1,6 +1,6 @@
 # SecureAir
 
-**Stage 22: report hash verification.** SecureAir remains an educational research prototype, not an authentication system.
+**Stage 23: security review remediation.** SecureAir remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
@@ -8,60 +8,43 @@
 - Consent-based enrollment and gesture-classification evaluation. No labeled biometric dataset or validated identity-confidence model is included; no accuracy claim is made.
 - User-bound, expiring, single-use challenges; fail-closed decisions; and a loopback FastAPI API. Gesture observations and behavioral scores remain caller-supplied and forgeable.
 - Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted.
-- A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor in the background.
-- `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries against schema v3; event details and chain hashes are excluded.
-- `backend/security_event_hashes.py` and `backend/security_event_chain.py`: canonical event hashes and a transactional backend event chain without an external trust anchor.
-- `backend/event_reports.py`: local PDF, CSV, and JSON encoders for already-minimized dashboard records.
-- `backend/report_integrity.py`: SHA-256 helpers to compute and verify digests for exact exported report bytes.
+- A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor or block in the background.
+- `backend/activity_dashboard.py`: token-gated, read-only, paginated schema-v3 queries. It verifies the complete event chain in the same SQLite read snapshot before returning minimized event metadata; details and chain hashes are excluded.
+- `backend/security_event_hashes.py` and `backend/security_event_chain.py`: canonical event hashing, transactional chain verification, and integrity-aware profile deletion.
+- `backend/event_reports.py`: local PDF, CSV, and JSON encoders for already-minimized records, with incremental row-count bounding, 256-character text field limits, and CSV formula safeguards.
+- `backend/report_integrity.py`: SHA-256 helpers for exact report bytes; these do not provide a signature or trustworthy anchor.
 
-## Report exports and integrity verification
+## Security review remediation
 
-First obtain minimized rows through the read-only activity query, then encode them with `export_events(events, "csv" | "json" | "pdf")`. The exporter rejects details and chain hashes, applies CSV formula safeguards, paginates PDFs, and caps input at 10,000 rows.
+Direct profile deletion is blocked by a SQLite trigger; callers must use `delete_profile_and_rechain(...)`, which verifies the existing history and performs profile deletion, event-reference nullification, chain recalculation, and trigger restoration in one transaction. Schema initialization installs the guard for new, migrated, and existing v3 databases. Chain-aware deletion is an application-level consistency control, not protection against a local database administrator who can modify schema or file contents.
 
-For byte-level verification, compute `digest = report_sha256(report_bytes)` after export and retain that digest separately from the file. Later call `verify_report_sha256(report_bytes, digest)`: it returns `True` for matching bytes and `False` for modified bytes, while malformed digest strings and non-byte report input raise `ReportIntegrityError`. The digest is lowercase SHA-256 hex.
+The activity query rejects invalid chain history before returning any records, so downstream report exporters only receive query results after successful verification when used via the documented flow. The query still excludes raw event details and hash columns.
 
-A hash only detects changes relative to a trusted digest. If an attacker can replace both the report and the saved digest, verification cannot establish authenticity. These helpers do not sign reports, store digests, or create an external trust anchor. Reports and digests may contain or relate to private records; keep them protected.
+Report exporters consume at most 10,001 iterator rows before refusing inputs over the 10,000-event cap. Text fields are limited to 256 characters to prevent unusually large fields from bypassing record-count bounds. These limits apply to the local encoding helper; callers should still obtain minimized rows from the dashboard and handle exports as private files.
 
-## Backend event integrity chain
+The API's gesture samples and scores are caller-supplied and forgeable; the extension is an explicit local status display and is not an authentication or navigation-blocking boundary. The system must not be used to protect real accounts or resources.
 
-New SecureAir databases use schema version 3. Structurally verified v1 or v2 databases migrate transactionally, with existing events linked in event-ID order. Invalid legacy event metadata stops and rolls back migration. Each backend event stores `previous_hash` and `event_hash`; the writer verifies history in the write transaction before appending and refuses to extend an invalid chain. The activity query supports v3 but excludes raw details and chain hashes. Profile deletion verifies and re-chains atomically to honor profile-reference nullification.
+## Report exports and integrity
 
-The chain can reveal inconsistent edits when verified; it cannot stop a database writer from changing records and recomputing the chain. There is no external chain anchor, signature, or remote checkpoint. Protect local database files and backups. Extension-local Stage 18 history is separate from Python SQLite.
+Use the read-only `ActivityDashboard.list_events(...)` and pass `page.items` to `export_events(events, "csv" | "json" | "pdf")`. Export fields are exactly `event_id`, `occurred_at`, `event_type`, `outcome`, and `profile_id`; details and chain hashes are rejected. For byte verification, compute `report_sha256(report_bytes)` and separately retain the digest, then use `verify_report_sha256(report_bytes, digest)`. A hash detects changes only relative to a trusted digest. It does not establish authorship or protect against replacement of both report and digest.
 
-## Extension-local event history
+## Backend chain limits
 
-For an enabled exact-host site, opening the popup stores only timestamp, hostname, and fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. No background tab/navigation listeners, host permissions, network calls, or API credentials are used. Options lets you view and clear the latest 200 events. This unencrypted history is not sent to Python SQLite and is not general browsing history.
+New databases use schema version 3. Verified v1/v2 SecureAir databases migrate transactionally; legacy event rows are linked by event ID. Event writes verify the full chain under a write lock and fail closed on invalid history. The chain has no external trust anchor, signature, or remote checkpoint; someone with database-file and schema control can rewrite rows and recompute the chain.
 
-## Run the integrated local demo
+The extension-local Stage 18 history remains separate from Python SQLite. No network export endpoint is provided.
 
-From the `SecureAir` directory in PowerShell, install development dependencies, set a fresh random API secret, and run the API:
+## Local demo and checks
+
+From `SecureAir` in PowerShell:
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
-$env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"
-python -m backend.app
-```
-
-In another shell, set the same secret and run the portal:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-$env:SECUREAIR_SECRET_KEY = "<same generated secret>"
-python -m uvicorn demo_portal.app:app --host 127.0.0.1 --port 8765
-```
-
-Visit `http://127.0.0.1:8765/`. Portal requests and consumes challenges from the API server-to-server. The secret is not sent to the browser. Inputs remain forgeable; never use this demo to protect real data.
-
-## Privacy and validation
-
-The dedicated database is `settings.data_dir / "secureair.sqlite3"`; unmarked/foreign databases are refused and the legacy Flask database is untouched. Enrollment features, backend event metadata, chain hashes, and extension event history are local and unencrypted. Report files and hashes should be treated as private. The extension list and history are separate from Python SQLite.
-
-```powershell
 python -m pytest
 ruff check .
 ```
 
-Tests and lint have not been run in this environment. Never commit secrets, profiles, private reports, or report digests.
+The API and portal remain loopback demonstrations, not production security controls. No local test, lint, camera, or dynamic penetration-test results are claimed here. Keep database files, reports, and report digests private; never commit secrets, profiles, or local data.
