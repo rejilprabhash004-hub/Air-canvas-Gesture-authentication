@@ -1,6 +1,6 @@
 # SecureAir
 
-**Stage 20: transactional hash chain for backend security events.** SecureAir remains an educational research prototype, not an authentication system.
+**Stage 21: privacy-minimized PDF, CSV, and JSON event reports.** SecureAir remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
@@ -10,39 +10,26 @@
 - Isolated SQLite schema, privacy-conscious event logger, and exact-host site preferences. Stored features are local and unencrypted.
 - A minimal Manifest V3 extension and a loopback demo portal. The extension records only user-opened popup checks for enabled exact-host sites in local storage; it does not monitor in the background.
 - `backend/activity_dashboard.py`: token-gated, read-only, paginated event queries against schema v3; event details and chain hashes are excluded.
-- `backend/security_event_hashes.py`: canonical event encoding and SHA-256 digest helper.
-- `backend/security_event_chain.py`: schema-v3 chain verification and profile deletion/re-chaining helpers. The event logger verifies prior history and appends new events and chain links atomically.
+- `backend/security_event_hashes.py` and `backend/security_event_chain.py`: canonical hashes and a transactional backend event chain, without an external trust anchor.
+- `backend/event_reports.py`: local PDF, CSV, and JSON encoders for already-minimized dashboard records. It does not access the database or add a network export endpoint.
+
+## Event report exports
+
+Call the read-only `ActivityDashboard.list_events(...)` first and pass its `page.items` to `export_events(events, "csv" | "json" | "pdf")`. The export module accepts exactly the minimized fields `event_id`, `occurred_at`, `event_type`, `outcome`, and `profile_id`; it rejects extra fields such as `details_json`, `previous_hash`, or `event_hash`. Event type and outcome are allowlisted and report size is capped at 10,000 rows. CSV values that could be interpreted as spreadsheet formulas are prefixed defensively. JSON has a versioned report marker. PDF generation uses the Python standard library, is paginated, and emits only the same minimized metadata.
+
+These are local encoding helpers only; they do not write files, add endpoints, create a trusted signature, or alter the event chain. Reports may still contain timestamps and pseudonymous profile IDs; handle them as private records and store/export them only where appropriate. No third-party PDF dependency was added.
 
 ## Backend event integrity chain
 
-New SecureAir databases use schema version 3. Structurally verified v1 or v2 databases migrate transactionally; v1 first gains the protected-sites table, and existing event rows are linked in event-ID order. Invalid legacy event metadata stops the migration and rolls back. Unmarked or unrelated databases continue to be refused.
+New SecureAir databases use schema version 3. Structurally verified v1 or v2 databases migrate transactionally; v1 first gains the protected-sites table, and existing events are linked in event-ID order. Invalid legacy event metadata stops the migration and rolls it back.
 
-Each backend security event stores `previous_hash` and `event_hash`. The first predecessor is 64 zeroes. The chain digest binds the Stage 19 canonical event hash to its predecessor with a versioned separator. Before every new event is appended, the writer verifies existing rows while holding the SQLite write transaction; it refuses to extend invalid history. The read-only activity query validates the v3 schema and continues to return only minimized event metadata. Profile deletion verifies then re-chains in one transaction to respect profile-reference nullification.
+Each backend security event stores `previous_hash` and `event_hash`. Before appending, the writer verifies existing rows while holding the SQLite write transaction, and refuses to extend invalid history. The activity query validates schema v3 and omits details and chain hashes. Profile deletion verifies then re-chains atomically to respect profile-reference nullification.
 
-The chain can reveal inconsistent edits when verified; it does not stop an attacker with write access from changing events and recomputing the full chain. There is no external trust anchor, signature, or remote checkpoint. Protect local database files and backups. Extension-local Stage 18 history is separate and untouched by this schema migration.
+The chain can reveal inconsistent edits when verified; it cannot prevent an attacker with database write access from changing records and recomputing the chain. There is no external trust anchor, signature, or remote checkpoint. Protect local database files and backups. The extension-local history is separate from Python SQLite.
 
 ## Extension-local event history
 
-For an enabled exact-host site, opening the popup stores an event containing only a timestamp, hostname, and fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. There are no background tab/navigation listeners, host permissions, network calls, or API credentials. Options lets you view and clear the latest 200 events. This local unencrypted history is not sent to Python SQLite and is not general browsing history.
-
-## Read-only Python activity queries
-
-The backend query module is a library only; there is no HTTP dashboard endpoint. Initialize the dedicated SecureAir database and provide a private token of at least 32 characters. Do not commit or put the token in browser code.
-
-```python
-import os
-from backend.activity_dashboard import ActivityDashboard
-from backend.config import load_settings
-from backend.database import database_path, initialize_database
-
-settings = load_settings()
-db_path = initialize_database(database_path(settings))
-access_token = os.environ["SECUREAIR_DASHBOARD_TOKEN"]
-dashboard = ActivityDashboard(db_path, access_token)
-page = dashboard.list_events(access_token, event_type="auth_attempt", outcome="denied")
-for event in page.items:
-    print(event)
-```
+For an enabled exact-host site, opening the popup stores only timestamp, hostname, and a fixed status label. It excludes URL paths, query strings, page content, and unconfigured or disabled sites. No background tab/navigation listeners, host permissions, network calls, or API credentials are used. Options lets you view and clear the latest 200 events. This unencrypted history is not sent to Python SQLite and is not general browsing history.
 
 ## Run the integrated local demo
 
@@ -57,7 +44,7 @@ $env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(3
 python -m backend.app
 ```
 
-In a second shell, set the same secret and run the portal:
+In another shell, set the same secret and run the portal:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -76,4 +63,4 @@ python -m pytest
 ruff check .
 ```
 
-Tests and lint have not been run in this environment. Never commit secrets, profiles, or databases.
+Tests and lint have not been run in this environment. Never commit secrets, profiles, or private reports.
