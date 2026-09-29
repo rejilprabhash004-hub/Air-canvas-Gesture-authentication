@@ -13,7 +13,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 7 | Random Forest/SVM evaluator with session-disjoint holdout and standard classification metrics | Pipeline behavior tests; real performance claims require labeled multi-session data and measured results |
 | 8 | User-bound expiring single-use gesture challenges | Tests for profile binding, unpredictable IDs, expiry, wrong-response consumption, one-time use, invalid input, and purge behavior |
 | 9 | Transparent combined decision policy | Tests for fail-closed behavior, threshold boundaries, invalid signals, and structured failure reasons; behavioral match score source must be explicitly supplied |
-| 10 | Loopback FastAPI | API tests; reject remote bind/unauthorized caller |
+| 10 | Loopback FastAPI service with local bearer protection | API tests; refuse non-loopback binds/clients; document trusted-input and identity-model limitations |
 | 11 | Secure SQLite schema | Foreign-key/schema tests; no legacy DB changes |
 | 12 | Authentication/security event logger | Privacy and failure-path tests |
 | 13 | Explicit protected-site settings | Add/remove/enable/disable tests |
@@ -30,4 +30,4 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 24 | UI improvements | Accessibility and regression tests |
 | 25 | Final docs and viva guide | Reproducible Windows install and demo |
 
-The Stage 9 policy combines status signals only; it does not compute or calibrate user identity. The current classifier/evaluator predicts gesture classes, and the repository has no real labeled biometric dataset. Challenges remain process-local and do not validate camera/detector provenance. A passing unit test is not proof of camera accuracy, identity assurance, or production security.
+The Stage 9 policy combines status signals only; it does not compute or calibrate user identity. The current classifier/evaluator predicts gesture classes, and the repository has no real labeled biometric dataset. Stage 10 API observations and scores are caller supplied and forgeable until a trusted local detector/model is integrated. Challenges remain process-local. A passing unit test is not proof of camera accuracy, identity assurance, or production security.
