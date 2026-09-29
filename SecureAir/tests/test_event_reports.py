@@ -53,16 +53,17 @@ def test_csv_export_has_fixed_minimized_columns_and_round_trips(events):
     assert b"event_hash" not in output and b"previous_hash" not in output
 
 
-def test_csv_protects_spreadsheet_formula_like_profile_values():
+def test_csv_protects_spreadsheet_formula_like_values():
     malicious = [{
         "event_id": 3,
-        "occurred_at": "2026-09-29T10:03:00+00:00",
+        "occurred_at": "=1+1",
         "event_type": "auth_attempt",
         "outcome": "failure",
         "profile_id": "=HYPERLINK(\"https://example.invalid\")",
     }]
     parsed = list(csv.DictReader(io.StringIO(export_events_csv(malicious).decode("utf-8"))))
     assert parsed[0]["profile_id"].startswith("'=")
+    assert parsed[0]["occurred_at"].startswith("'=")
 
 
 def test_pdf_has_valid_header_xref_and_minimized_report_text(events):
@@ -73,6 +74,21 @@ def test_pdf_has_valid_header_xref_and_minimized_report_text(events):
     assert b"auth_attempt" in output and b"challenge_issue" in output
     assert b"details_json" not in output
     assert b"event_hash" not in output and b"previous_hash" not in output
+
+
+def test_pdf_paginates_long_reports():
+    many = [
+        {
+            "event_id": index,
+            "occurred_at": "2026-09-29T10:00:00+00:00",
+            "event_type": "auth_attempt",
+            "outcome": "failure",
+            "profile_id": None,
+        }
+        for index in range(1, 60)
+    ]
+    output = export_events_pdf(many)
+    assert output.count(b"/Type /Page ") == 2
 
 
 def test_empty_reports_and_format_dispatch(events):
