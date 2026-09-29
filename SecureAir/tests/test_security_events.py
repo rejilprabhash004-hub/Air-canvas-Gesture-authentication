@@ -120,7 +120,9 @@ def test_profile_deletion_rolls_back_if_history_cannot_be_rechained(tmp_path):
     add_profile(path)
     logger.record("profile_enroll", "success", profile_id="user_1")
     with database_connection(path) as connection:
-        connection.execute("UPDATE security_events SET details_json='{""secret"":true}'")
+        connection.execute(
+            "UPDATE security_events SET details_json = ?", ('{"secret":true}',)
+        )
     with pytest.raises(SecurityEventChainError):
         delete_profile_and_rechain(str(path), "user_1")
     with database_connection(path) as connection:
