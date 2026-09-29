@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["backend*"]
+include = ["backend*", "gesture*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
