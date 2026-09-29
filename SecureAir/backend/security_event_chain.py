@@ -38,6 +38,53 @@ def hash_chained_event(event: Mapping[str, Any], previous_hash: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _rechain_all_events(connection) -> None:
+    """Recompute all links inside the caller's active transaction."""
+    previous_hash = GENESIS_HASH
+    rows = connection.execute(
+        """SELECT event_id, occurred_at, event_type, outcome, profile_id, details_json
+           FROM security_events ORDER BY event_id ASC"""
+    ).fetchall()
+    for row in rows:
+        event = {key: row[key] for key in (
+            "event_id", "occurred_at", "event_type", "outcome", "profile_id", "details_json"
+        )}
+        try:
+            event_hash = hash_chained_event(event, previous_hash)
+        except SecurityEventChainError as exc:
+            raise SecurityEventChainError("security event cannot be re-chained safely.") from exc
+        connection.execute(
+            "UPDATE security_events SET previous_hash = ?, event_hash = ? WHERE event_id = ?",
+            (previous_hash, event_hash, row["event_id"]),
+        )
+        previous_hash = event_hash
+
+
+def delete_profile_and_rechain(db_path: str, profile_id: str) -> bool:
+    """Delete a profile, null its event references, then atomically re-chain.
+
+    Profile deletion intentionally changes historical profile_id fields due to
+    the database's ON DELETE SET NULL privacy behavior. Recomputing the affected
+    chain in the same transaction preserves internal consistency. It does not
+    provide an external tamper-evident anchor.
+    """
+    if not isinstance(profile_id, str) or not profile_id:
+        raise SecurityEventChainError("profile_id must be a non-empty string.")
+    try:
+        with database_connection(db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "DELETE FROM profiles WHERE profile_id = ?", (profile_id,)
+            )
+            if cursor.rowcount:
+                _rechain_all_events(connection)
+            return cursor.rowcount > 0
+    except SecurityEventChainError:
+        raise
+    except Exception as exc:
+        raise SecurityEventChainError("profile deletion and chain update failed.") from exc
+
+
 def verify_security_event_chain(db_path: str) -> ChainVerificationResult:
     """Verify every stored event and predecessor link in event_id order.
 
