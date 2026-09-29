@@ -21,8 +21,6 @@ from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.auth_decision import evaluate_authentication
-
 _SESSION_TTL_SECONDS = 300
 _MAX_FORM_BYTES = 8192
 _MAX_RESPONSE_BYTES = 65536
