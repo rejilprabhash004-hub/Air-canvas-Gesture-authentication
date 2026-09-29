@@ -52,9 +52,9 @@ def test_rejects_nonfinite_features_and_misaligned_rows():
 
 
 def test_rejects_too_few_sessions_for_class_complete_split():
-    features = [[0.0], [0.1], [1.0], [1.1]]
-    labels = ["A", "A", "B", "B"]
-    sessions = ["a1", "a2", "b1", "b2"]
+    features = [[0.0], [0.1], [0.2], [1.0], [1.1], [1.2]]
+    labels = ["A", "A", "A", "B", "B", "B"]
+    sessions = ["session-A"] * 3 + ["session-B"] * 3
     with pytest.raises(ModelEvaluationError, match="session-disjoint split"):
         compare_models(features, labels, sessions, test_size=0.5)
 
