@@ -12,7 +12,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 6 | Palm-normalized motion summaries from timestamped landmarks | Timing/order, normalization, movement-rate, malformed and out-of-frame tests |
 | 7 | Random Forest/SVM evaluator with session-disjoint holdout and standard classification metrics | Pipeline behavior tests; real performance claims require labeled multi-session data and measured results |
 | 8 | User-bound expiring single-use gesture challenges | Tests for profile binding, unpredictable IDs, expiry, wrong-response consumption, one-time use, invalid input, and purge behavior |
-| 9 | Transparent combined decision | Threshold and failure-reason tests |
+| 9 | Transparent combined decision policy | Tests for fail-closed behavior, threshold boundaries, invalid signals, and structured failure reasons; behavioral match score source must be explicitly supplied |
 | 10 | Loopback FastAPI | API tests; reject remote bind/unauthorized caller |
 | 11 | Secure SQLite schema | Foreign-key/schema tests; no legacy DB changes |
 | 12 | Authentication/security event logger | Privacy and failure-path tests |
@@ -27,7 +27,7 @@ Each stage should be reviewed and its automated checks run before the next. Keep
 | 21 | PDF/CSV/JSON reports | Content/privacy/export tests |
 | 22 | Report hash verification | File hash and tamper tests |
 | 23 | Security review | Threat-model checks and limitations |
-| 24 | UI improvements | Accessibility and regression checks |
+| 24 | UI improvements | Accessibility and regression tests |
 | 25 | Final docs and viva guide | Reproducible Windows install and demo |
 
-Challenges are currently process-local and disappear on restart. They do not establish identity or validate camera/detector provenance. A passing unit test is not proof of camera accuracy, identity assurance, or production security.
+The Stage 9 policy combines status signals only; it does not compute or calibrate user identity. The current classifier/evaluator predicts gesture classes, and the repository has no real labeled biometric dataset. Challenges remain process-local and do not validate camera/detector provenance. A passing unit test is not proof of camera accuracy, identity assurance, or production security.
