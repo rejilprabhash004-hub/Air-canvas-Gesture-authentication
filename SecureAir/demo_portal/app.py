@@ -1,149 +1,243 @@
-"""Loopback-only FastAPI demo portal with server-side decision checks.
+"""Loopback demo portal that delegates challenge decisions to the local API.
 
-This educational portal is deliberately disconnected from camera and identity
-signals. Submitted form values are forgeable and must never protect real data.
+The portal never receives API credentials from the browser. Form signals remain
+visitor-supplied and forgeable, so this is only an educational integration demo.
 """
 from __future__ import annotations
 
 import html
 import ipaddress
+import json
+import os
 import secrets
-from typing import Literal
-from urllib.parse import parse_qs
+import time
+from http.client import HTTPRedirectHandler
+from typing import Callable, Literal
+from urllib.error import URLError
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
+from urllib.request import Request, build_opener
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from backend.auth_decision import evaluate_authentication
+
+_SESSION_TTL_SECONDS = 300
+_MAX_FORM_BYTES = 8192
+_MAX_RESPONSE_BYTES = 65536
 
 
 class DemoDecisionInput(BaseModel):
     sequence_status: Literal["SUCCESS", "FAILED", "TIMEOUT", "IN_PROGRESS"]
-    challenge_success: bool
     behavioral_match_score: float | None = Field(default=None, ge=0.0, le=1.0)
     threshold: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
-def _loopback(client: str | None) -> bool:
-    if not client:
+def _is_loopback(host: str | None) -> bool:
+    if not host:
         return False
     try:
-        return ipaddress.ip_address(client).is_loopback
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return client.lower() == "localhost"
+        return host.lower() == "localhost"
 
 
-def _render_page(result: dict | None = None) -> str:
-    decision_panel = ""
-    if result is not None:
+def _api_endpoint(path: str) -> str:
+    base = os.environ.get("SECUREAIR_API_URL", "http://127.0.0.1:8000").strip()
+    parsed = urlsplit(base)
+    try:
+        valid_port = parsed.port is None or 1 <= parsed.port <= 65535
+    except ValueError:
+        valid_port = False
+    if (parsed.scheme != "http" or not _is_loopback(parsed.hostname)
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or not valid_port):
+        raise RuntimeError("API URL must be an HTTP loopback origin without credentials or path.")
+    origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    return f"{origin}/{path.lstrip('/')}"
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Do not forward the API bearer token to a redirect target."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+def _call_api(path: str, payload: dict) -> dict:
+    """Make a bounded, authenticated server-to-server request to loopback API."""
+    secret = os.environ.get("SECUREAIR_SECRET_KEY", "")
+    if len(secret) < 32:
+        raise RuntimeError("Local API secret is not configured on the server.")
+    request = Request(
+        _api_endpoint(path),
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {secret}"},
+        method="POST",
+    )
+    try:
+        with build_opener(_RejectRedirects).open(request, timeout=3.0) as response:
+            raw = response.read(_MAX_RESPONSE_BYTES + 1)
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise RuntimeError("Local API response exceeded the allowed size.")
+        result = json.loads(raw)
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Local API is unavailable or returned an invalid response.") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("Local API returned an invalid response.")
+    return result
+
+
+def _read_form(body: bytes) -> dict[str, str]:
+    if len(body) > _MAX_FORM_BYTES:
+        raise ValueError("Form submission is too large.")
+    values = parse_qs(body.decode("utf-8"), strict_parsing=True, max_num_fields=16)
+    result: dict[str, str] = {}
+    for key, entries in values.items():
+        if len(entries) != 1:
+            raise ValueError("Repeated form fields are not accepted.")
+        result[key] = entries[0]
+    return result
+
+
+def _render_page(*, challenge: dict | None = None, result: dict | None = None,
+                 message: str | None = None) -> str:
+    challenge_form = ""
+    if challenge:
+        challenge_id = html.escape(challenge["challenge_id"], quote=True)
+        profile_id = html.escape(challenge["profile_id"], quote=True)
+        gestures = html.escape(", ".join(challenge["gestures"]))
+        challenge_form = (
+            '<form action="/demo/decision" method="post">'
+            f'<input type="hidden" name="challenge_id" value="{challenge_id}">'
+            f'<input type="hidden" name="profile_id" value="{profile_id}">'
+            f'<p>Challenge gestures (enter in order): <strong>{gestures}</strong></p>'
+            '<label for="observed">Observed gestures, comma-separated</label>'
+            '<input id="observed" name="observed_gestures" autocomplete="off" required>'
+            '<label for="sequence">Sequence status</label>'
+            '<select id="sequence" name="sequence_status">'
+            '<option value="SUCCESS">Success</option><option value="FAILED">Failed</option>'
+            '<option value="TIMEOUT">Timeout</option><option value="IN_PROGRESS">In progress</option>'
+            '</select><label for="score">Caller-supplied behavioral score (0–1)</label>'
+            '<input id="score" name="behavioral_match_score" type="number" min="0" max="1" step="0.01">'
+            '<label for="threshold">Decision threshold (0–1)</label>'
+            '<input id="threshold" name="threshold" type="number" min="0" max="1" step="0.01" value="0.8">'
+            '<button type="submit">Send response to local API</button></form>'
+        )
+    result_panel = ""
+    if result:
         decision = html.escape(str(result.get("decision", "DENY")))
         reasons = html.escape(", ".join(result.get("reasons", [])))
         link = '<p><a href="/protected">Open protected demo resource</a></p>' if result.get("allowed") else ""
-        decision_panel = (
-            f'<section aria-live="polite"><h2>Server decision: {decision}</h2>'
-            f"<p>Reasons: {reasons}</p>{link}</section>"
-        )
+        result_panel = f'<section aria-live="polite"><h2>Server decision: {decision}</h2><p>{reasons}</p>{link}</section>'
+    notice = f'<p role="status">{html.escape(message)}</p>' if message else ""
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<title>SecureAir controlled demo</title></head><body><main>'
-        '<h1>SecureAir controlled demo portal</h1>'
-        '<p>This local educational demo checks access on the server. Submitted values are '
-        'caller-supplied and forgeable; this is not real authentication.</p>'
-        '<form action="/demo/decision" method="post">'
-        '<label for="sequence">Gesture sequence status</label>'
-        '<select id="sequence" name="sequence_status">'
-        '<option value="SUCCESS">Success</option><option value="FAILED">Failed</option>'
-        '<option value="TIMEOUT">Timeout</option><option value="IN_PROGRESS">In progress</option>'
-        '</select><label for="challenge">Demo challenge result</label>'
-        '<select id="challenge" name="challenge_success">'
-        '<option value="true">Success</option><option value="false">Failure</option></select>'
-        '<label for="score">Caller-supplied behavioral score (0–1)</label>'
-        '<input id="score" name="behavioral_match_score" type="number" min="0" max="1" step="0.01">'
-        '<label for="threshold">Decision threshold (0–1)</label>'
-        '<input id="threshold" name="threshold" type="number" min="0" max="1" step="0.01" value="0.8" required>'
-        '<button type="submit">Evaluate demo decision</button></form>'
-        f"{decision_panel}"
+        '<title>SecureAir integrated local demo</title></head><body><main>'
+        '<h1>SecureAir integrated local demo</h1>'
+        '<p>Loopback demonstration only. Submitted responses and scores are forgeable; '
+        'this is not authentication.</p>'
+        f'{notice}{challenge_form}{result_panel}'
         '<form action="/logout" method="post"><button type="submit">Clear demo session</button></form>'
         '</main></body></html>'
     )
 
 
-def create_demo_app() -> FastAPI:
-    """Create a small demo site with authorization enforced by the server."""
-    app = FastAPI(title="SecureAir Controlled Demo Portal", version="0.1.0")
+def create_demo_app(api_caller: Callable[[str, dict], dict] | None = None) -> FastAPI:
+    """Create the portal. ``api_caller`` is injectable for isolated integration tests."""
+    app = FastAPI(title="SecureAir Controlled Demo Portal", version="0.2.0")
     app.state.demo_sessions = {}
+    app.state.api_caller = api_caller or _call_api
 
     @app.middleware("http")
-    async def local_only(request: Request, call_next):
-        if not _loopback(request.client.host if request.client else None):
+    async def local_only(request: FastAPIRequest, call_next):
+        if not _is_loopback(request.client.host if request.client else None):
             return HTMLResponse("Local demo only", status_code=403)
         return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return HTMLResponse(_render_page())
+        try:
+            challenge = app.state.api_caller("/challenges", {"profile_id": "demo_user"})
+            if (not isinstance(challenge.get("challenge_id"), str)
+                    or not isinstance(challenge.get("profile_id"), str)
+                    or not isinstance(challenge.get("gestures"), list)
+                    or not challenge["gestures"]
+                    or not all(isinstance(item, str) for item in challenge["gestures"])):
+                raise RuntimeError("Local API returned an invalid challenge.")
+            return HTMLResponse(_render_page(challenge=challenge))
+        except (RuntimeError, ValueError, TypeError, AttributeError):
+            return HTMLResponse(
+                _render_page(message="Challenge service unavailable; access remains denied."),
+                status_code=503,
+            )
 
     @app.post("/demo/decision", response_class=HTMLResponse)
-    async def submit_demo_decision(request: Request):
-        """Evaluate posted fields and grant only a server-recorded demo session."""
+    async def submit_demo_decision(request: FastAPIRequest):
+        """Consume the API challenge; only its ALLOW response creates a portal session."""
         try:
-            form = parse_qs((await request.body()).decode("utf-8"), strict_parsing=True)
-            def one(name: str, default: str | None = None) -> str:
-                values = form.get(name, [])
-                if len(values) != 1:
-                    if default is not None and not values:
-                        return default
-                    raise ValueError("missing or repeated form value")
-                return values[0]
-
-            challenge = one("challenge_success")
-            if challenge not in {"true", "false"}:
-                raise ValueError("invalid challenge result")
-            score_text = one("behavioral_match_score", "").strip()
+            form = _read_form(await request.body())
+            challenge_id = form["challenge_id"]
+            profile_id = form["profile_id"]
+            observed = [item.strip() for item in form["observed_gestures"].split(",")]
+            if not challenge_id or len(challenge_id) > 128 or not profile_id or len(profile_id) > 64:
+                raise ValueError("Invalid challenge or profile identifier.")
+            score_text = form.get("behavioral_match_score", "").strip()
             payload = DemoDecisionInput.model_validate({
-                "sequence_status": one("sequence_status"),
-                "challenge_success": challenge == "true",
+                "sequence_status": form["sequence_status"],
                 "behavioral_match_score": None if not score_text else float(score_text),
-                "threshold": float(one("threshold", "0.8")),
+                "threshold": float(form.get("threshold", "0.8")),
             })
-            decision = evaluate_authentication(
-                sequence_status=payload.sequence_status,
-                challenge_success=payload.challenge_success,
-                behavioral_match_score=payload.behavioral_match_score,
-                threshold=payload.threshold,
+            response = app.state.api_caller(
+                f"/challenges/{quote(challenge_id, safe='')}/consume",
+                {
+                    "profile_id": profile_id,
+                    "observed_gestures": observed,
+                    "sequence_status": payload.sequence_status,
+                    "behavioral_match_score": payload.behavioral_match_score,
+                    "threshold": payload.threshold,
+                },
             )
-        except (ValueError, TypeError, UnicodeDecodeError):
-            decision = {"decision": "DENY", "allowed": False, "reasons": ["invalid_demo_input"]}
+            if (response.get("decision") not in {"ALLOW", "DENY"}
+                    or not isinstance(response.get("allowed"), bool)
+                    or response["allowed"] != (response["decision"] == "ALLOW")):
+                raise RuntimeError("Local API returned an invalid decision.")
+            result = response
+        except (KeyError, ValueError, TypeError, ValidationError):
+            result = {"decision": "DENY", "allowed": False, "reasons": ["invalid_demo_input"]}
+        except (RuntimeError, AttributeError):
+            result = {"decision": "DENY", "allowed": False, "reasons": ["challenge_service_unavailable"]}
 
         session_id = secrets.token_urlsafe(24)
-        app.state.demo_sessions[session_id] = bool(decision.get("allowed"))
-        response = HTMLResponse(_render_page(decision))
+        app.state.demo_sessions[session_id] = (result["allowed"] is True, time.monotonic() + _SESSION_TTL_SECONDS)
+        response = HTMLResponse(_render_page(result=result))
         response.set_cookie(
             "secureair_demo_session", session_id, httponly=True,
-            samesite="strict", secure=False, max_age=300,
+            samesite="strict", secure=False, max_age=_SESSION_TTL_SECONDS,
         )
         return response
 
     @app.get("/protected", response_class=HTMLResponse)
-    async def protected_resource(request: Request):
-        """Authorize on the server; a hidden link/client flag is not sufficient."""
+    async def protected_resource(request: FastAPIRequest):
+        now = time.monotonic()
+        app.state.demo_sessions = {
+            key: record for key, record in app.state.demo_sessions.items() if record[1] > now
+        }
         session_id = request.cookies.get("secureair_demo_session", "")
-        if not session_id or app.state.demo_sessions.get(session_id) is not True:
-            return HTMLResponse(
-                "<!doctype html><title>Denied</title><h1>Access denied</h1>",
-                status_code=403,
-            )
+        record = app.state.demo_sessions.get(session_id)
+        if not record or record[0] is not True:
+            return HTMLResponse("<!doctype html><title>Denied</title><h1>Access denied</h1>", status_code=403)
         return HTMLResponse(
             "<!doctype html><title>Demo</title><h1>Protected demo resource</h1>"
-            "<p>For demonstration only; submitted signals are forgeable.</p>"
+            "<p>Educational only; API inputs are forgeable.</p>"
         )
 
     @app.post("/logout")
-    async def logout(request: Request):
-        session_id = request.cookies.get("secureair_demo_session", "")
-        app.state.demo_sessions.pop(session_id, None)
+    async def logout(request: FastAPIRequest):
+        app.state.demo_sessions.pop(request.cookies.get("secureair_demo_session", ""), None)
         response = HTMLResponse("<!doctype html><h1>Demo session cleared</h1>")
         response.delete_cookie("secureair_demo_session", httponly=True, samesite="strict")
         return response
