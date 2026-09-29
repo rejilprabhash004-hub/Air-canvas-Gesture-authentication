@@ -103,11 +103,16 @@ class ActivityDashboard:
         offset: int = 0,
     ) -> ActivityPage:
         """Return paginated minimized events; filters are exact and parameterized."""
-        if not isinstance(access_token, str) or not hmac.compare_digest(access_token, self._access_token):
+        if (not isinstance(access_token, str)
+                or not hmac.compare_digest(access_token.encode("utf-8"), self._access_token.encode("utf-8"))):
             raise ActivityDashboardAuthorizationError("Dashboard access denied.")
-        if event_type is not None and event_type not in _EVENT_TYPES:
+        if event_type is not None and (
+            not isinstance(event_type, str) or event_type not in _EVENT_TYPES
+        ):
             raise ActivityDashboardError("event_type is not allowlisted.")
-        if outcome is not None and outcome not in _OUTCOMES:
+        if outcome is not None and (
+            not isinstance(outcome, str) or outcome not in _OUTCOMES
+        ):
             raise ActivityDashboardError("outcome is not allowlisted.")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_LIMIT:
             raise ActivityDashboardError("limit must be an integer from 1 to 100.")
@@ -144,9 +149,7 @@ class ActivityDashboard:
                 f"FROM security_events{where} ORDER BY occurred_at DESC, event_id DESC LIMIT ? OFFSET ?",
                 [*parameters, limit, offset],
             ).fetchall()
-            items = [dict(row) for row in rows]
-            connection.commit()
-            return ActivityPage(items=items, total=total, limit=limit, offset=offset)
+            return ActivityPage(items=[dict(row) for row in rows], total=total, limit=limit, offset=offset)
         except sqlite3.Error as exc:
             raise ActivityDashboardError("SecureAir activity data could not be read.") from exc
         finally:
