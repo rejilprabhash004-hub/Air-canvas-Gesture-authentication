@@ -18,7 +18,7 @@ SecureAir is developed separately from the legacy Flask application. Run automat
 | 12 | Privacy-conscious security event logger | Allowlist, redaction, database failure, privacy tests; no secrets/biometrics in logs |
 | 13 | Explicit protected-site settings | Host normalization, exact matching, CRUD, v1-to-v2 migration, legacy DB isolation tests |
 | 14 | Minimal Manifest V3 status extension | Explicit hosts only; least privilege; no background browsing, credentials, page-content access, or remote calls |
-| 15 | Controlled demo portal | Server-side authorization tests |
+| 15 | Controlled local demo portal | Server-side authorization tests; loopback-only; disclose forgeable demo inputs and process-local session state |
 | 16 | End-to-end integration | Integration tests and manual demonstration |
 | 17 | Local activity dashboard | Query/filter/privacy tests |
 | 18 | Explicit-domain activity events | Confirm arbitrary browsing is not monitored |
@@ -32,4 +32,4 @@ SecureAir is developed separately from the legacy Flask application. Run automat
 
 ## Current limitations
 
-The gesture model classifies gestures; there is no real labeled biometric dataset or validated user-identity confidence model. The API accepts caller-supplied, forgeable observations/scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash-chained. SQLite feature data is not encrypted. Protected-site settings are exact-host preferences only. The Stage 14 extension stores a separate local list and shows status only after an explicit toolbar click; it does not monitor or block browsing and does not authenticate. No secure extension-to-service handoff is implemented. The prototype must remain local and educational until integration and security-review stages pass.
+The gesture model classifies gestures; there is no real labeled biometric dataset or validated user-identity confidence model. The API accepts caller-supplied, forgeable observations/scores; camera provenance is not integrated. Challenges are process-local. Security events are allowlisted but not yet hash-chained. SQLite feature data is not encrypted. Protected-site settings are exact-host preferences only. The Stage 14 extension stores a separate local list and shows status after an explicit toolbar click; it does not monitor, block, or authenticate. Stage 15 is a loopback-only control-flow demonstration: inputs are forgeable, sessions are in-memory, and no real resource should rely on it. No extension-to-service authentication handoff exists. The prototype must remain local and educational until integration and security-review stages pass.
