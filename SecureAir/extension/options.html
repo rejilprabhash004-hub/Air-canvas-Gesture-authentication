@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manage SecureAir sites</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>Protected sites</h1>
+    <p>Only sites you add here are listed. This is a local status preference, not access control.</p>
+    <form id="add-form">
+      <label for="display-name">Display name</label>
+      <input id="display-name" name="displayName" maxlength="80" required>
+      <label for="domain">Hostname (for example, portal.example.edu)</label>
+      <input id="domain" name="domain" autocomplete="off" maxlength="253" required>
+      <button type="submit">Add site</button>
+    </form>
+    <p id="message" role="status" aria-live="polite"></p>
+    <ul id="sites" aria-label="Configured sites"></ul>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>
