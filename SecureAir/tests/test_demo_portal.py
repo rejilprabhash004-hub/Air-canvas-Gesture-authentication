@@ -1,67 +1,109 @@
-"""Server-side authorization tests for the local controlled demo portal."""
+"""Portal tests stub only the server-side API caller; they never bypass its decision."""
 from fastapi.testclient import TestClient
 
 from demo_portal.app import create_demo_app
 
 
+GESTURES = ["FIST", "OPEN_PALM", "THUMBS_UP"]
+
+
+def fake_api(path, payload):
+    if path == "/challenges":
+        return {
+            "challenge_id": "local-challenge-1",
+            "profile_id": payload["profile_id"],
+            "gestures": GESTURES,
+            "created_at": "now",
+            "expires_at": "later",
+        }
+    if path.endswith("/consume"):
+        success = payload["observed_gestures"] == GESTURES
+        allowed = (success and payload["sequence_status"] == "SUCCESS"
+                   and payload["behavioral_match_score"] is not None
+                   and payload["behavioral_match_score"] >= payload["threshold"])
+        return {
+            "decision": "ALLOW" if allowed else "DENY",
+            "allowed": allowed,
+            "reasons": ["all_required_signals_passed"] if allowed else ["challenge_failed"],
+            "threshold": payload["threshold"],
+            "behavioral_score_source": "caller_supplied",
+        }
+    raise AssertionError(f"Unexpected API path: {path}")
+
+
 def client(peer="127.0.0.1"):
-    return TestClient(create_demo_app(), client=(peer, 45678))
+    return TestClient(create_demo_app(api_caller=fake_api), client=(peer, 45678))
 
 
-def post_decision(test_client, *, sequence="SUCCESS", challenge="true", score="0.95", threshold="0.8"):
-    return test_client.post(
-        "/demo/decision",
-        data={
-            "sequence_status": sequence,
-            "challenge_success": challenge,
-            "behavioral_match_score": score,
-            "threshold": threshold,
-        },
-    )
+def submit(test_client, *, observed=", ".join(GESTURES), sequence="SUCCESS",
+           score="0.95", threshold="0.8", challenge_id="local-challenge-1"):
+    return test_client.post("/demo/decision", data={
+        "challenge_id": challenge_id,
+        "profile_id": "demo_user",
+        "observed_gestures": observed,
+        "sequence_status": sequence,
+        "behavioral_match_score": score,
+        "threshold": threshold,
+    })
 
 
-def test_protected_resource_denies_without_server_authorized_session():
+def test_home_page_requests_and_displays_an_api_challenge():
+    response = client().get("/")
+    assert response.status_code == 200
+    assert "local-challenge-1" in response.text
+    assert ", ".join(GESTURES) in response.text
+    assert "Send response to local API" in response.text
+
+
+def test_protected_resource_denies_without_an_api_allow():
     assert client().get("/protected").status_code == 403
 
 
-def test_valid_demo_decision_grants_resource_server_side():
+def test_api_allow_creates_server_side_portal_session():
     test_client = client()
-    response = post_decision(test_client)
+    response = submit(test_client)
     assert response.status_code == 200
     assert "Server decision: ALLOW" in response.text
     cookie = response.headers["set-cookie"].lower()
-    assert "httponly" in cookie
-    assert "samesite=strict" in cookie
-    assert test_client.get("/protected").status_code == 200
-    assert "Protected demo resource" in test_client.get("/protected").text
+    assert "httponly" in cookie and "samesite=strict" in cookie
+    protected = test_client.get("/protected")
+    assert protected.status_code == 200
+    assert "Protected demo resource" in protected.text
 
 
-def test_failed_sequence_challenge_or_score_does_not_grant_resource():
-    cases = (
+def test_wrong_response_and_failed_signals_do_not_grant_protected_resource():
+    for fields in (
+        {"observed": "OPEN_PALM, FIST, THUMBS_UP"},
         {"sequence": "FAILED"},
-        {"challenge": "false"},
         {"score": "0.1"},
-    )
-    for values in cases:
+        {"score": ""},
+    ):
         test_client = client()
-        post_decision(test_client, **values)
+        submit(test_client, **fields)
         assert test_client.get("/protected").status_code == 403
 
 
-def test_invalid_fields_fail_closed_and_do_not_grant_resource():
+def test_invalid_input_fails_closed():
     test_client = client()
-    response = post_decision(test_client, sequence="FORGED", challenge="maybe", score="nan")
-    assert response.status_code == 200
+    response = submit(test_client, sequence="FORGED", challenge_id="")
     assert "Server decision: DENY" in response.text
     assert test_client.get("/protected").status_code == 403
 
 
-def test_logout_revokes_server_session():
+def test_logout_revokes_server_side_session():
     test_client = client()
-    post_decision(test_client)
+    submit(test_client)
     assert test_client.get("/protected").status_code == 200
     test_client.post("/logout")
     assert test_client.get("/protected").status_code == 403
+
+
+def test_api_failure_when_issuing_challenge_fails_closed():
+    def unavailable(_path, _payload):
+        raise RuntimeError("unavailable")
+    response = TestClient(create_demo_app(api_caller=unavailable)).get("/")
+    assert response.status_code == 503
+    assert "access remains denied" in response.text
 
 
 def test_rejects_non_loopback_clients():
