@@ -13,7 +13,7 @@ from backend.database import (
     database_path,
     initialize_database,
 )
-from backend.security_event_chain import verify_security_event_chain
+from backend.security_event_chain import delete_profile_and_rechain, verify_security_event_chain
 from backend.security_events import SecurityEventLogger
 
 
@@ -23,52 +23,51 @@ def db_path(tmp_path):
 
 def test_database_path_uses_configured_data_directory(tmp_path):
     settings = Settings(
-        data_dir=tmp_path / "private-data",
-        host="127.0.0.1",
-        port=8000,
-        secret_key="x" * 40,
-        lockout_max_attempts=3,
-        lockout_seconds=300,
+        data_dir=tmp_path / "private-data", host="127.0.0.1", port=8000,
+        secret_key="x" * 40, lockout_max_attempts=3, lockout_seconds=300,
         challenge_seconds=60,
     )
     assert database_path(settings) == tmp_path / "private-data" / DATABASE_FILENAME
 
 
-def test_initialize_creates_v3_chain_schema_and_is_idempotent(tmp_path):
+def test_initialize_creates_v3_schema_with_profile_delete_guard(tmp_path):
     path = db_path(tmp_path)
     assert initialize_database(path) == path
     assert initialize_database(path) == path
-
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
-        tables = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"profiles", "enrollment_samples", "security_events", "protected_sites"} <= tables
         columns = {row[1] for row in connection.execute("PRAGMA table_info(security_events)")}
         assert {"previous_hash", "event_hash"} <= columns
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+            "AND name='secureair_guard_profile_delete'"
+        ).fetchone()[0] == 1
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 0
 
 
-def test_database_connection_enforces_foreign_keys_and_profile_delete_cascades(tmp_path):
+def test_direct_profile_delete_is_blocked_but_chain_helper_deletes_and_rechains(tmp_path):
     path = initialize_database(db_path(tmp_path))
     with database_connection(path) as connection:
-        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "created", "consent", "v1"))
         connection.execute(
-            "INSERT INTO profiles VALUES (?, ?, ?, ?)",
-            ("alice", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", "v1"),
+            "INSERT INTO enrollment_samples (profile_id,session_id,sample_number,features_json,created_at) "
+            "VALUES (?,?,?,?,?)", ("alice", "session-a", 1, "[0.1,0.2]", "created"),
         )
-        connection.execute(
-            "INSERT INTO enrollment_samples "
-            "(profile_id, session_id, sample_number, features_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("alice", "session-a", 1, "[0.1,0.2]", "2026-01-01T00:00:00+00:00"),
-        )
+    logger = SecurityEventLogger(path)
+    event_id = logger.record("profile_enroll", "success", profile_id="alice")
     with database_connection(path) as connection:
-        connection.execute("DELETE FROM profiles WHERE profile_id = ?", ("alice",))
+        with pytest.raises(sqlite3.IntegrityError, match="chain-aware helper"):
+            connection.execute("DELETE FROM profiles WHERE profile_id = ?", ("alice",))
+        assert connection.execute("SELECT COUNT(*) FROM enrollment_samples").fetchone()[0] == 1
+    assert delete_profile_and_rechain(str(path), "alice") is True
+    with database_connection(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM enrollment_samples").fetchone()[0] == 0
+        row = connection.execute("SELECT profile_id FROM security_events WHERE event_id=?", (event_id,)).fetchone()
+        assert row["profile_id"] is None
+    assert verify_security_event_chain(str(path)).valid
 
 
 def test_rejects_legacy_or_unmarked_existing_database_without_modifying_it(tmp_path):
@@ -124,16 +123,13 @@ def test_connection_context_rolls_back_on_exception(tmp_path):
     path = initialize_database(db_path(tmp_path))
     with pytest.raises(RuntimeError):
         with database_connection(path) as connection:
-            connection.execute(
-                "INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "now", "now", "v1")
-            )
+            connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "now", "now", "v1"))
             raise RuntimeError("abort transaction")
     with database_connection(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM profiles").fetchone()[0] == 0
 
 
 def _create_v1_database(path):
-    """Build the original SecureAir v1 database fixture."""
     statements = (
         "CREATE TABLE profiles (profile_id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, consent_at TEXT NOT NULL, feature_schema TEXT NOT NULL)",
         "CREATE TABLE enrollment_samples (sample_id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL, session_id TEXT NOT NULL, sample_number INTEGER NOT NULL CHECK (sample_number BETWEEN 1 AND 20), features_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (profile_id, session_id, sample_number), FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE CASCADE)",
@@ -149,7 +145,6 @@ def _create_v1_database(path):
 
 
 def _downgrade_empty_v3_to_v2(path):
-    """Create the v2 event-table shape for an isolated migration test."""
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE protected_sites")
         connection.execute("ALTER TABLE security_events RENAME TO events_v3")
@@ -174,11 +169,12 @@ def test_migrates_verified_v1_database_to_v3_and_preserves_rows(tmp_path):
     _create_v1_database(path)
     with sqlite3.connect(path) as connection:
         connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("alice", "created", "consent", "v1"))
-    assert initialize_database(path) == path
+    initialize_database(path)
     with database_connection(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT profile_id FROM profiles").fetchone()[0] == "alice"
         assert connection.execute("SELECT COUNT(*) FROM protected_sites").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='secureair_guard_profile_delete'").fetchone()[0] == 1
     assert initialize_database(path) == path
 
 
@@ -188,17 +184,16 @@ def test_v2_migration_backfills_valid_chain_and_preserves_event_rows(tmp_path):
     with sqlite3.connect(path) as connection:
         connection.execute("INSERT INTO profiles VALUES (?, ?, ?, ?)", ("user_1", "created", "consent", "v1"))
         connection.execute(
-            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) "
-            "VALUES (1,?,?,?,?,?)",
+            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) VALUES (1,?,?,?,?,?)",
             ("2026-02-03T04:05:06+00:00", "auth_attempt", "denied", "user_1", '{"reason_code":"challenge_failed"}'),
         )
     initialize_database(path)
     assert verify_security_event_chain(str(path)).valid
     with database_connection(path) as connection:
         row = connection.execute("SELECT event_id, previous_hash, event_hash FROM security_events").fetchone()
-        assert row["event_id"] == 1
-        assert row["previous_hash"] == "0" * 64
+        assert row["event_id"] == 1 and row["previous_hash"] == "0" * 64
         assert len(row["event_hash"]) == 64
+        assert connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='secureair_guard_profile_delete'").fetchone()[0] == 1
 
 
 def test_v2_migration_rolls_back_when_existing_event_is_invalid(tmp_path):
@@ -206,8 +201,7 @@ def test_v2_migration_rolls_back_when_existing_event_is_invalid(tmp_path):
     _downgrade_empty_v3_to_v2(path)
     with sqlite3.connect(path) as connection:
         connection.execute(
-            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) "
-            "VALUES (1,?,?,?,?,?)",
+            "INSERT INTO security_events (event_id,occurred_at,event_type,outcome,profile_id,details_json) VALUES (1,?,?,?,?,?)",
             ("now", "auth_attempt", "failure", None, '{"token":"must-not-migrate"}'),
         )
     before = path.read_bytes()
