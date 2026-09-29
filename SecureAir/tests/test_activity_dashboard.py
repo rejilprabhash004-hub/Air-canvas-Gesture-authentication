@@ -30,7 +30,7 @@ def make_dashboard(tmp_path):
     return db_path, ActivityDashboard(db_path, TOKEN)
 
 
-def test_lists_minimized_events_in_reverse_chronological_pages(tmp_path):
+def test_lists_minimized_v3_events_without_details_or_hashes(tmp_path):
     _, dashboard = make_dashboard(tmp_path)
     page = dashboard.list_events(TOKEN, limit=2)
     assert page.total == 3
@@ -39,7 +39,6 @@ def test_lists_minimized_events_in_reverse_chronological_pages(tmp_path):
     assert [row["event_type"] for row in page.items] == ["auth_attempt", "challenge_consume"]
     assert all("details_json" not in row for row in page.items)
     assert all("previous_hash" not in row and "event_hash" not in row for row in page.items)
-
     next_page = dashboard.list_events(TOKEN, limit=2, offset=2)
     assert len(next_page.items) == 1
     assert next_page.items[0]["event_type"] == "auth_attempt"
@@ -59,12 +58,8 @@ def test_bad_token_is_denied(tmp_path):
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"event_type": "password"},
-    {"outcome": "visitor-supplied text"},
-    {"limit": 0},
-    {"limit": 101},
-    {"offset": -1},
-    {"after": "2026-04-02T12:00:00"},
+    {"event_type": "password"}, {"outcome": "visitor-supplied text"}, {"limit": 0},
+    {"limit": 101}, {"offset": -1}, {"after": "2026-04-02T12:00:00"},
     {"after": "2026-04-04T00:00:00Z", "before": "2026-04-03T00:00:00Z"},
 ])
 def test_rejects_invalid_filters_and_ranges(tmp_path, kwargs):
@@ -73,11 +68,12 @@ def test_rejects_invalid_filters_and_ranges(tmp_path, kwargs):
         dashboard.list_events(TOKEN, **kwargs)
 
 
-def test_refuses_write_and_returns_no_raw_details(tmp_path):
+def test_refuses_write_and_returns_no_raw_details_or_chain_hashes(tmp_path):
     db_path, dashboard = make_dashboard(tmp_path)
     page = dashboard.list_events(TOKEN)
     assert page.total == 3
     assert all("details_json" not in row for row in page.items)
+    assert all("event_hash" not in row and "previous_hash" not in row for row in page.items)
     with pytest.raises(ActivityDashboardError):
         with dashboard._connect_read_only() as connection:
             connection.execute("DELETE FROM security_events")
