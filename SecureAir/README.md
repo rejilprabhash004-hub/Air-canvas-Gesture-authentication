@@ -21,7 +21,7 @@ From this `SecureAir` directory in PowerShell:
 
 ```powershell
 py -3.11 -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
 $env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"
