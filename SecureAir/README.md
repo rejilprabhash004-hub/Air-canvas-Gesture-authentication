@@ -1,33 +1,41 @@
 # SecureAir
 
-**Stage 11: isolated SQLite schema.** This remains an educational research prototype, not an authentication system.
+**Stage 12: privacy-conscious security event logger.** This remains an educational research prototype, not an authentication system.
 
 ## Implemented components
 
-- Local MediaPipe hand detector and validated 21-point landmarks; camera frames are transient and are not stored.
-- Geometric classifier for Open Palm, Fist, Thumbs Up, Victory, and Pointing, plus a release-aware gesture-sequence state machine.
-- Consent-based local enrollment of 10–20 feature vectors and profile deletion. Profiles are sensitive, unencrypted files; protect data directories and backups.
-- Palm-normalized temporal feature extraction and a Random Forest/RBF SVM evaluation pipeline using session-disjoint splits. No labeled real-world dataset is included and no performance claims are made.
-- User-bound, expiring, single-use challenge manager. Challenge state is in-memory and disappears on restart.
-- Fail-closed decision policy and loopback FastAPI endpoints. The API currently accepts caller-supplied gesture observations and match scores, not trusted camera/model results.
-- `backend/database.py`: separate `secureair.sqlite3` schema under the configured SecureAir data directory, with profiles, enrollment samples, and security events.
+- Local MediaPipe hand detection and validated 21-point landmarks; camera frames are transient and not stored.
+- Geometric gesture classification and a release-aware ordered-sequence state machine.
+- Consent-based local enrollment of 10–20 feature vectors and profile deletion. Profiles and feature data are sensitive, unencrypted local data; protect files and backups.
+- Palm-normalized motion feature extraction and Random Forest/RBF SVM evaluation with session-disjoint splits. No real labeled dataset or performance claims are included.
+- Unpredictable, user-bound, expiring, single-use challenges in process memory.
+- Fail-closed decision policy and loopback FastAPI service. The service currently trusts caller-supplied gesture observations and match scores; it is not a production authentication boundary.
+- An isolated SecureAir SQLite database with profile, enrollment sample, and event tables. Initialization refuses unrelated/unmarked databases and does not modify the legacy Flask database.
+- `backend/security_events.py`: SQLite security-event writer with allowlisted event types, outcomes, reason codes, and components. It rejects free-form details and does not accept credentials, challenge IDs, video, landmarks, or gesture sequences.
 
-## SQLite isolation and initialization
+## Event logging
 
-Initialize only at the dedicated path `settings.data_dir / "secureair.sqlite3"`:
+Initialize the separate SecureAir DB and record minimized event metadata:
 
 ```python
 from backend.config import load_settings
 from backend.database import database_path, initialize_database
+from backend.security_events import SecurityEventLogger
 
 settings = load_settings()
-path = initialize_database(database_path(settings))
-print(path)
+db_path = initialize_database(database_path(settings))
+logger = SecurityEventLogger(db_path)
+logger.record(
+    "auth_attempt",
+    "denied",
+    profile_id="local_user_1",  # pseudonymous local ID, not a name/email
+    reason_code="challenge_failed",
+    http_status=401,
+    component="decision",
+)
 ```
 
-Initialization marks the database with a SecureAir application ID and schema version. It refuses unmarked databases containing tables, databases marked for another application, unsupported versions, unexpected/incomplete schemas, symlink paths, and filenames other than `secureair.sqlite3`. Thus it will not modify the legacy Flask database. Connections made with `database_connection(path)` enable SQLite foreign keys and commit on success or roll back on exceptions. On POSIX systems the initialized database file is restricted to owner read/write permissions where supported.
-
-Enrollment feature values are stored as JSON in the local database and are sensitive biometric-derived data. Obtain explicit consent and protect the data directory and its backups. This schema does not encrypt those values or claim secure deletion.
+The logger stores UTC timestamps and allowlisted structured metadata only. Use a pseudonymous profile ID; do not log secrets, tokens, user-supplied text, raw frames/landmarks, gesture sequences, or model features. The logger is not a tamper-evident audit system; hash chaining is a later stage. Event and enrollment data remain local but are not encrypted. Apply OS-level protection to the data directory and backups.
 
 ## Run local API
 
@@ -42,7 +50,7 @@ $env:SECUREAIR_SECRET_KEY = python -c "import secrets; print(secrets.token_hex(3
 python -m backend.app
 ```
 
-The API defaults to `127.0.0.1:8000`; functional routes require a bearer token. Do not expose it to a network. Current challenge API observations and scores can be forged by a caller; the webcam/detector and an identity model are not integrated.
+The API defaults to `127.0.0.1:8000`; functional routes require a bearer token. Do not expose it to a network. Current challenge API observations and scores are caller supplied and forgeable; the webcam/detector and identity model are not integrated. Challenge state disappears on process restart.
 
 ## Checks
 
