@@ -1,18 +1,18 @@
 """Loopback-only FastAPI demo portal with server-side decision checks.
 
-This educational portal is intentionally disconnected from camera and identity
-signals. Its submitted fields can be forged and must never protect real data.
+This educational portal is deliberately disconnected from camera and identity
+signals. Submitted form values are forgeable and must never protect real data.
 """
 from __future__ import annotations
 
+import html
 import ipaddress
 import secrets
-from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
+from urllib.parse import parse_qs
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from backend.auth_decision import evaluate_authentication
@@ -34,12 +34,46 @@ def _loopback(client: str | None) -> bool:
         return client.lower() == "localhost"
 
 
+def _render_page(result: dict | None = None) -> str:
+    decision_panel = ""
+    if result is not None:
+        decision = html.escape(str(result.get("decision", "DENY")))
+        reasons = html.escape(", ".join(result.get("reasons", [])))
+        link = '<p><a href="/protected">Open protected demo resource</a></p>' if result.get("allowed") else ""
+        decision_panel = (
+            f'<section aria-live="polite"><h2>Server decision: {decision}</h2>'
+            f"<p>Reasons: {reasons}</p>{link}</section>"
+        )
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<title>SecureAir controlled demo</title></head><body><main>'
+        '<h1>SecureAir controlled demo portal</h1>'
+        '<p>This local educational demo checks access on the server. Submitted values are '
+        'caller-supplied and forgeable; this is not real authentication.</p>'
+        '<form action="/demo/decision" method="post">'
+        '<label for="sequence">Gesture sequence status</label>'
+        '<select id="sequence" name="sequence_status">'
+        '<option value="SUCCESS">Success</option><option value="FAILED">Failed</option>'
+        '<option value="TIMEOUT">Timeout</option><option value="IN_PROGRESS">In progress</option>'
+        '</select><label for="challenge">Demo challenge result</label>'
+        '<select id="challenge" name="challenge_success">'
+        '<option value="true">Success</option><option value="false">Failure</option></select>'
+        '<label for="score">Caller-supplied behavioral score (0–1)</label>'
+        '<input id="score" name="behavioral_match_score" type="number" min="0" max="1" step="0.01">'
+        '<label for="threshold">Decision threshold (0–1)</label>'
+        '<input id="threshold" name="threshold" type="number" min="0" max="1" step="0.01" value="0.8" required>'
+        '<button type="submit">Evaluate demo decision</button></form>'
+        f"{decision_panel}"
+        '<form action="/logout" method="post"><button type="submit">Clear demo session</button></form>'
+        '</main></body></html>'
+    )
+
+
 def create_demo_app() -> FastAPI:
     """Create a small demo site with authorization enforced by the server."""
     app = FastAPI(title="SecureAir Controlled Demo Portal", version="0.1.0")
     app.state.demo_sessions = {}
-    template_dir = Path(__file__).resolve().parent / "templates"
-    templates = Jinja2Templates(directory=str(template_dir))
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -48,32 +82,31 @@ def create_demo_app() -> FastAPI:
         return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
-        return templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context={"result": None},
-        )
+    async def index():
+        return HTMLResponse(_render_page())
 
     @app.post("/demo/decision", response_class=HTMLResponse)
-    async def submit_demo_decision(
-        request: Request,
-        sequence_status: Annotated[str, Form()],
-        challenge_success: Annotated[str, Form()],
-        behavioral_match_score: Annotated[str, Form()],
-        threshold: Annotated[str, Form()] = "0.8",
-    ):
-        """Evaluate the demonstration fields; grant only a server-recorded session."""
+    async def submit_demo_decision(request: Request):
+        """Evaluate posted fields and grant only a server-recorded demo session."""
         try:
-            if challenge_success not in {"true", "false"}:
+            form = parse_qs((await request.body()).decode("utf-8"), strict_parsing=True)
+            def one(name: str, default: str | None = None) -> str:
+                values = form.get(name, [])
+                if len(values) != 1:
+                    if default is not None and not values:
+                        return default
+                    raise ValueError("missing or repeated form value")
+                return values[0]
+
+            challenge = one("challenge_success")
+            if challenge not in {"true", "false"}:
                 raise ValueError("invalid challenge result")
+            score_text = one("behavioral_match_score", "").strip()
             payload = DemoDecisionInput.model_validate({
-                "sequence_status": sequence_status,
-                "challenge_success": challenge_success == "true",
-                "behavioral_match_score": (
-                    None if behavioral_match_score.strip() == "" else float(behavioral_match_score)
-                ),
-                "threshold": float(threshold),
+                "sequence_status": one("sequence_status"),
+                "challenge_success": challenge == "true",
+                "behavioral_match_score": None if not score_text else float(score_text),
+                "threshold": float(one("threshold", "0.8")),
             })
             decision = evaluate_authentication(
                 sequence_status=payload.sequence_status,
@@ -81,29 +114,21 @@ def create_demo_app() -> FastAPI:
                 behavioral_match_score=payload.behavioral_match_score,
                 threshold=payload.threshold,
             )
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, UnicodeDecodeError):
             decision = {"decision": "DENY", "allowed": False, "reasons": ["invalid_demo_input"]}
 
         session_id = secrets.token_urlsafe(24)
         app.state.demo_sessions[session_id] = bool(decision.get("allowed"))
-        response = templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context={"result": decision},
-        )
+        response = HTMLResponse(_render_page(decision))
         response.set_cookie(
-            "secureair_demo_session",
-            session_id,
-            httponly=True,
-            samesite="strict",
-            secure=False,  # This toy server is intended for loopback HTTP only.
-            max_age=300,
+            "secureair_demo_session", session_id, httponly=True,
+            samesite="strict", secure=False, max_age=300,
         )
         return response
 
     @app.get("/protected", response_class=HTMLResponse)
     async def protected_resource(request: Request):
-        """Authorize at the server; a hidden link or client flag is not sufficient."""
+        """Authorize on the server; a hidden link/client flag is not sufficient."""
         session_id = request.cookies.get("secureair_demo_session", "")
         if not session_id or app.state.demo_sessions.get(session_id) is not True:
             return HTMLResponse(
