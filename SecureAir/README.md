@@ -1,18 +1,19 @@
 # SecureAir
 
-**Stage 4: ordered gesture-sequence tracking.** This is an educational prototype, not a complete authentication system.
+**Stage 5: consent-based local enrollment.** This is an educational research prototype, not a complete authentication system.
 
 ## Implemented components
 
-- `gesture/hand_detector.py`: local MediaPipe Hands adapter; no video is saved.
-- `gesture/landmarks.py`: validates and normalizes 21 XYZ landmarks relative to the wrist and palm scale.
-- `gesture/gesture_recognition.py`: explainable static-pose labels for Open Palm, Fist, Thumbs Up, Victory, and Pointing.
-- `gesture/sequence.py`: camera-independent, time-limited sequence state machine. It accepts recognized labels in order, fails on a supported but unexpected pose, and requires a neutral/no-gesture frame before counting the next pose (including repeated gestures).
-- Synthetic tests cover landmark, detector, classifier, and sequence behavior without using a webcam.
+- `gesture/hand_detector.py`: local MediaPipe Hands adapter; camera frames are transient and not saved.
+- `gesture/landmarks.py`: validates and normalizes 21 XYZ landmarks.
+- `gesture/gesture_recognition.py`: static-pose labels for Open Palm, Fist, Thumbs Up, Victory, and Pointing.
+- `gesture/sequence.py`: ordered sequence tracker with neutral release and timeout behavior.
+- `gesture/enrollment.py`: explicit-consent enrollment of 10–20 normalized 63-feature samples, with local profile deletion.
+- Synthetic tests for validation and state behavior; no webcam is needed for unit tests.
 
-The classifier assumes an approximately upright hand and has not been evaluated on a real camera dataset. Pose labels and the sequence tracker do not establish identity. There is no enrollment, behavior model, dynamic challenge, or authentication yet.
+Enrollment accepts normalized feature vectors only, not camera frames. It refuses missing consent, malformed or non-finite samples, invalid profile IDs, and overwriting an existing profile. Profile JSON is stored in `data/profiles/` as **unencrypted, sensitive biometric-derived data**. Use only on a device you control; protect the data directory and backups, do not sync it to shared/cloud storage, and use `delete_profile(data_dir, profile_id)` when deleting an enrollment. File deletion does not guarantee secure erasure from backups or storage media. This stage does not itself verify identity or authenticate.
 
-## Windows setup and tests
+## Windows setup and checks
 
 From this `SecureAir` directory in PowerShell:
 
@@ -27,6 +28,6 @@ ruff check .
 python -m gesture.camera_preview
 ```
 
-Quit the preview with **Q** or **Esc**. The preview is optional for unit tests. Frames are transient and processed locally; get consent before camera use. Never commit the environment secret.
+Quit preview with **Q** or **Esc**. It is optional for tests. Obtain consent before camera use. Never commit the secret or local profiles.
 
-See `docs/architecture.md`, `docs/development-plan.md`, and `docs/threat-model.md` for planned architecture, stages, and limitations. The legacy Flask project's test runner deletes its database; run it only against a disposable clone.
+See `docs/architecture.md`, `docs/development-plan.md`, and `docs/threat-model.md`. The original Flask project remains separate; its existing test runner deletes its database, so run that only against a disposable clone.
