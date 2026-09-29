@@ -4,6 +4,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const form = document.getElementById("add-form");
   const list = document.getElementById("sites");
   const message = document.getElementById("message");
+  const eventsList = document.getElementById("events");
+  const eventsMessage = document.getElementById("events-message");
+  const clearEventsButton = document.getElementById("clear-events");
   let sites = [];
 
   function normalizeHostname(input) {
@@ -36,10 +39,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function persist() {
     await chrome.storage.local.set({ protectedSites: sites });
-    render();
+    renderSites();
   }
 
-  function render() {
+  function renderSites() {
     list.replaceChildren();
     for (const site of sites) {
       const item = document.createElement("li");
@@ -66,8 +69,47 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
+  function renderEvents(events) {
+    eventsList.replaceChildren();
+    const safeEvents = Array.isArray(events) ? events.slice(-200).reverse() : [];
+    if (safeEvents.length === 0) {
+      eventsMessage.textContent = "No local explicit checks recorded.";
+      return;
+    }
+    eventsMessage.textContent = `${safeEvents.length} most recent explicit checks (maximum 200).`;
+    for (const event of safeEvents) {
+      if (!event || typeof event.timestamp !== "string" || typeof event.hostname !== "string"
+          || event.status !== "enabled_status_checked") continue;
+      const item = document.createElement("li");
+      const date = new Date(event.timestamp);
+      const timestamp = Number.isNaN(date.getTime()) ? "Unknown time" : date.toLocaleString();
+      item.textContent = `${timestamp} — ${event.hostname} — status checked`;
+      eventsList.append(item);
+    }
+  }
+
+  async function loadEvents() {
+    try {
+      const stored = await chrome.storage.local.get({ activityEvents: [] });
+      renderEvents(stored.activityEvents);
+    } catch {
+      eventsMessage.textContent = "Unable to read local event history.";
+    }
+  }
+
   await loadSites();
-  render();
+  renderSites();
+  await loadEvents();
+
+  clearEventsButton.addEventListener("click", async () => {
+    try {
+      await chrome.storage.local.set({ activityEvents: [] });
+      renderEvents([]);
+      eventsMessage.textContent = "Local event history cleared.";
+    } catch {
+      eventsMessage.textContent = "Unable to clear local event history.";
+    }
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
